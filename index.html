@@ -1,25 +1,55 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#f5f0e8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Focusline is a calm pomodoro timer for deep work: focus sessions, short breaks, long breaks and a record of your day.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f5f0e8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121a18" media="(prefers-color-scheme: dark)">
   <title>Focusline | Pomodoro Timer</title>
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f6b5b' stroke-width='3'/%3E%3Cpath d='M16 9v7h5' fill='none' stroke='%232f6b5b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+
+  <!-- Applied before paint so the theme never flashes on load. -->
+  <script>
+    (function () {
+      try {
+        var preference = localStorage.getItem('focusline-theme') || 'auto';
+        var dark = preference === 'dark'
+          || (preference === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      } catch (error) {
+        document.documentElement.dataset.theme = 'light';
+      }
+    })();
+  </script>
 </head>
+
 <body>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
+  <a class="skip-link" href="#timerPanel">Skip to the timer</a>
+
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
 
   <header class="topbar">
     <a class="brand" href="./" aria-label="Focusline home">
       <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
       <span>focusline</span>
     </a>
-    <div class="topbar-meta"><span class="status-dot"></span><span id="headerStatus">Ready to focus</span></div>
+
+    <div class="topbar-tools">
+      <p class="topbar-meta" id="headerStatus" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span><span id="headerStatusText">Ready to focus</span>
+      </p>
+      <button class="ghost-button" id="themeToggle" type="button" aria-label="Change theme">
+        Theme: <span id="themeLabel">auto</span>
+      </button>
+    </div>
   </header>
 
   <main class="app-shell">
@@ -29,14 +59,15 @@
       <p class="intro">One focused session at a time. Set your rhythm, settle in, and let the clock take care of the rest.</p>
     </section>
 
-    <section class="timer-panel" id="timerPanel" aria-label="Pomodoro timer">
+    <section class="timer-panel" id="timerPanel" aria-label="Pomodoro timer" tabindex="-1">
       <div class="timer-topline">
-        <div class="mode-pill" id="modePill"><span class="mode-dot"></span><span id="modeLabel">WORK SESSION</span></div>
+        <p class="mode-pill" id="modePill"><span class="mode-dot" aria-hidden="true"></span><span id="modeLabel">Focus session</span></p>
         <div class="timer-tools">
-          <div class="cycle-label">CYCLE <strong id="cycleNumber">01</strong></div>
-          <button class="fullscreen-button" id="fullscreenButton" type="button" aria-label="Enter fullscreen">Full screen</button>
+          <p class="cycle-label">Cycle <strong id="cycleNumber">01</strong></p>
+          <button class="fullscreen-button" id="fullscreenButton" type="button" aria-label="Enter full screen">Full screen</button>
         </div>
       </div>
+
       <div class="timer-display-wrap">
         <div class="timer-ring" id="timerRing">
           <svg class="progress-ring" viewBox="0 0 360 360" aria-hidden="true">
@@ -44,58 +75,143 @@
             <circle class="ring-progress" id="progressRing" cx="180" cy="180" r="164"></circle>
           </svg>
           <div class="timer-display">
-            <span id="timeDisplay">25:00</span>
+            <span id="timeDisplay" role="timer" aria-live="off">25:00</span>
             <span class="time-caption" id="timeCaption">minutes remaining</span>
           </div>
         </div>
       </div>
+
       <div class="timer-actions">
-        <button class="button button-primary" id="startButton" type="button"><span class="button-icon" aria-hidden="true">▶</span>Start focus</button>
+        <button class="button button-primary" id="startButton" type="button" aria-pressed="false">
+          <span class="button-icon" id="startIcon" aria-hidden="true">▶</span><span id="startLabel">Start focus</span>
+        </button>
         <button class="button button-secondary" id="resetButton" type="button">Reset</button>
-        <button class="button button-quiet" id="skipButton" type="button">Skip next <span aria-hidden="true">→</span></button>
+        <button class="button button-quiet" id="skipButton" type="button">Skip session</button>
       </div>
-      <p class="keyboard-hint"><kbd>Space</kbd> to start or pause</p>
+
+      <p class="next-up" id="nextUp">Next: a 5 minute break</p>
+      <p class="keyboard-hint">
+        <kbd>Space</kbd> start or pause<span class="hint-sep" aria-hidden="true">·</span>
+        <kbd>R</kbd> reset<span class="hint-sep" aria-hidden="true">·</span>
+        <kbd>S</kbd> skip<span class="hint-sep" aria-hidden="true">·</span>
+        <kbd>F</kbd> full screen
+      </p>
     </section>
 
     <aside class="stats-panel" aria-label="Session progress">
-      <div class="panel-heading"><span>Today’s rhythm</span><span class="panel-rule"></span></div>
-      <div class="stat-grid">
-        <div class="stat-item"><span class="stat-value" id="completedSessions">0</span><span class="stat-label">sessions completed</span></div>
-        <div class="stat-item"><span class="stat-value" id="focusMinutes">0</span><span class="stat-label">focus minutes</span></div>
-        <div class="stat-item"><span class="stat-value" id="sessionState">Ready</span><span class="stat-label">current state</span></div>
+      <div class="panel-heading">
+        <span>Today’s rhythm</span>
+        <span class="panel-rule" aria-hidden="true"></span>
+        <button class="ghost-button" id="resetStats" type="button">Clear</button>
       </div>
-      <div class="session-track" aria-label="Sessions completed today">
-        <span class="track-label">Progress</span>
-        <div class="track-dots" id="trackDots"></div>
+
+      <div class="stat-grid">
+        <p class="stat-item"><span class="stat-value" id="completedSessions">0</span><span class="stat-label">sessions completed</span></p>
+        <p class="stat-item"><span class="stat-value" id="focusMinutes">0</span><span class="stat-label">focus minutes</span></p>
+        <p class="stat-item"><span class="stat-value" id="sessionState">Ready</span><span class="stat-label">current state</span></p>
+      </div>
+
+      <div class="session-track">
+        <span class="track-label">Until long break</span>
+        <div class="track-dots" id="trackDots" aria-hidden="true"></div>
         <span class="track-count" id="trackCount">0 / 4</span>
       </div>
     </aside>
 
     <section class="settings-panel" aria-labelledby="settingsTitle">
       <div class="settings-heading">
-        <div><p class="eyebrow">Your rhythm</p><h2 id="settingsTitle">Session settings</h2></div>
-        <span class="saved-label" id="savedLabel">Saved automatically</span>
+        <div>
+          <p class="eyebrow">Your rhythm</p>
+          <h2 id="settingsTitle">Session settings</h2>
+        </div>
+        <p class="saved-label" id="savedLabel">Saved automatically</p>
       </div>
+
       <div class="settings-grid">
-        <label class="setting-control" for="workDuration">
-          <span class="setting-name">Focus duration</span>
-          <span class="setting-input"><input id="workDuration" type="number" min="1" max="120" value="25"><span>min</span></span>
-          <span class="range-wrap"><input id="workRange" type="range" min="1" max="120" value="25"><span class="range-limits"><span>1 min</span><span>120 min</span></span></span>
-        </label>
-        <label class="setting-control" for="breakDuration">
-          <span class="setting-name">Break duration</span>
-          <span class="setting-input"><input id="breakDuration" type="number" min="1" max="60" value="5"><span>min</span></span>
-          <span class="range-wrap"><input id="breakRange" type="range" min="1" max="60" value="5"><span class="range-limits"><span>1 min</span><span>60 min</span></span></span>
-        </label>
-        <div class="setting-control mode-setting">
-          <span class="setting-name">Automatic mode</span>
-          <button class="toggle-row" id="autoToggle" type="button" role="switch" aria-checked="true"><span class="toggle"><span></span></span><span><strong id="autoLabel">On</strong><small>Continue through each session</small></span></button>
+        <div class="setting-control">
+          <label class="setting-name" for="workDuration">Focus duration</label>
+          <div class="setting-input">
+            <input id="workDuration" type="number" min="1" max="120" step="1" value="25" inputmode="numeric" autocomplete="off">
+            <span>min</span>
+          </div>
+          <div class="range-wrap">
+            <input id="workRange" type="range" min="1" max="120" step="1" value="25" aria-label="Focus duration in minutes">
+            <div class="range-limits"><span>1</span><span>120</span></div>
+          </div>
+        </div>
+
+        <div class="setting-control">
+          <label class="setting-name" for="breakDuration">Break duration</label>
+          <div class="setting-input">
+            <input id="breakDuration" type="number" min="1" max="60" step="1" value="5" inputmode="numeric" autocomplete="off">
+            <span>min</span>
+          </div>
+          <div class="range-wrap">
+            <input id="breakRange" type="range" min="1" max="60" step="1" value="5" aria-label="Break duration in minutes">
+            <div class="range-limits"><span>1</span><span>60</span></div>
+          </div>
+        </div>
+
+        <div class="setting-control">
+          <label class="setting-name" for="longBreakDuration">Long break</label>
+          <div class="setting-input">
+            <input id="longBreakDuration" type="number" min="1" max="60" step="1" value="15" inputmode="numeric" autocomplete="off">
+            <span>min</span>
+          </div>
+          <div class="range-wrap">
+            <input id="longBreakRange" type="range" min="1" max="60" step="1" value="15" aria-label="Long break duration in minutes">
+            <div class="range-limits"><span>1</span><span>60</span></div>
+          </div>
+        </div>
+
+        <div class="setting-control">
+          <label class="setting-name" for="roundsInput">Long break after</label>
+          <div class="setting-input">
+            <input id="roundsInput" type="number" min="2" max="8" step="1" value="4" inputmode="numeric" autocomplete="off">
+            <span>sessions</span>
+          </div>
+          <div class="range-wrap">
+            <input id="roundsRange" type="range" min="2" max="8" step="1" value="4" aria-label="Focus sessions before a long break">
+            <div class="range-limits"><span>2</span><span>8</span></div>
+          </div>
+        </div>
+
+        <div class="setting-control switch-stack">
+          <p class="setting-name">Session behaviour</p>
+
+          <button class="toggle-row" id="autoToggle" type="button" role="switch" aria-checked="true">
+            <span class="toggle" aria-hidden="true"><span></span></span>
+            <span class="toggle-text">
+              <strong>Continue automatically <span class="toggle-state" id="autoLabel">On</span></strong>
+              <small>Roll straight into the next session</small>
+            </span>
+          </button>
+
+          <button class="toggle-row" id="soundToggle" type="button" role="switch" aria-checked="true">
+            <span class="toggle" aria-hidden="true"><span></span></span>
+            <span class="toggle-text">
+              <strong>Chime <span class="toggle-state" id="soundLabel">On</span></strong>
+              <small>A soft tone when a session ends</small>
+            </span>
+          </button>
+
+          <button class="toggle-row" id="notifyToggle" type="button" role="switch" aria-checked="false">
+            <span class="toggle" aria-hidden="true"><span></span></span>
+            <span class="toggle-text">
+              <strong>Desktop alerts <span class="toggle-state" id="notifyLabel">Off</span></strong>
+              <small>Get told even in another tab</small>
+            </span>
+          </button>
         </div>
       </div>
     </section>
   </main>
 
-  <footer class="footer"><span>FOCUSLINE / 2026</span><span class="footer-note">Your attention is the asset.</span></footer>
+  <footer class="footer">
+    <span>Focusline / 2026</span>
+    <span class="footer-note">Your attention is the asset.</span>
+  </footer>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="script.js"></script>
 </body>
