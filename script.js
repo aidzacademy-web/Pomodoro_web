@@ -23,6 +23,7 @@ const elements = {
   ring: document.querySelector('#timerRing'),
   progress: document.querySelector('#progressRing'),
   cycle: document.querySelector('#cycleNumber'),
+  timerPanel: document.querySelector('#timerPanel'),
   fullscreen: document.querySelector('#fullscreenButton'),
   start: document.querySelector('#startButton'),
   reset: document.querySelector('#resetButton'),
@@ -126,7 +127,7 @@ async function toggleFullscreen() {
     showToast('Fullscreen is not supported here');
     return;
   }
-  await document.documentElement.requestFullscreen();
+  await elements.timerPanel.requestFullscreen();
 }
 
 function updateFullscreenControl() {
