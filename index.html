@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f5f0e8">
+  <title>Focusline | Pomodoro Timer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="Focusline home">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span>focusline</span>
+    </a>
+    <div class="topbar-meta"><span class="status-dot"></span><span id="headerStatus">Ready to focus</span></div>
+  </header>
+
+  <main class="app-shell">
+    <section class="hero-copy" aria-labelledby="pageTitle">
+      <p class="eyebrow">A quieter way to get things done</p>
+      <h1 id="pageTitle">Make space for<br><em>deep work.</em></h1>
+      <p class="intro">One focused session at a time. Set your rhythm, settle in, and let the clock take care of the rest.</p>
+    </section>
+
+    <section class="timer-panel" aria-label="Pomodoro timer">
+      <div class="timer-topline">
+        <div class="mode-pill" id="modePill"><span class="mode-dot"></span><span id="modeLabel">WORK SESSION</span></div>
+        <div class="timer-tools">
+          <div class="cycle-label">CYCLE <strong id="cycleNumber">01</strong></div>
+          <button class="fullscreen-button" id="fullscreenButton" type="button" aria-label="Enter fullscreen">Full screen</button>
+        </div>
+      </div>
+      <div class="timer-display-wrap">
+        <div class="timer-ring" id="timerRing">
+          <svg class="progress-ring" viewBox="0 0 360 360" aria-hidden="true">
+            <circle class="ring-track" cx="180" cy="180" r="164"></circle>
+            <circle class="ring-progress" id="progressRing" cx="180" cy="180" r="164"></circle>
+          </svg>
+          <div class="timer-display">
+            <span id="timeDisplay">25:00</span>
+            <span class="time-caption" id="timeCaption">minutes remaining</span>
+          </div>
+        </div>
+      </div>
+      <div class="timer-actions">
+        <button class="button button-primary" id="startButton" type="button"><span class="button-icon" aria-hidden="true">▶</span>Start focus</button>
+        <button class="button button-secondary" id="resetButton" type="button">Reset</button>
+        <button class="button button-quiet" id="skipButton" type="button">Skip next <span aria-hidden="true">→</span></button>
+      </div>
+      <p class="keyboard-hint"><kbd>Space</kbd> to start or pause</p>
+    </section>
+
+    <aside class="stats-panel" aria-label="Session progress">
+      <div class="panel-heading"><span>Today’s rhythm</span><span class="panel-rule"></span></div>
+      <div class="stat-grid">
+        <div class="stat-item"><span class="stat-value" id="completedSessions">0</span><span class="stat-label">sessions completed</span></div>
+        <div class="stat-item"><span class="stat-value" id="focusMinutes">0</span><span class="stat-label">focus minutes</span></div>
+        <div class="stat-item"><span class="stat-value" id="sessionState">Ready</span><span class="stat-label">current state</span></div>
+      </div>
+      <div class="session-track" aria-label="Sessions completed today">
+        <span class="track-label">Progress</span>
+        <div class="track-dots" id="trackDots"></div>
+        <span class="track-count" id="trackCount">0 / 4</span>
+      </div>
+    </aside>
+
+    <section class="settings-panel" aria-labelledby="settingsTitle">
+      <div class="settings-heading">
+        <div><p class="eyebrow">Your rhythm</p><h2 id="settingsTitle">Session settings</h2></div>
+        <span class="saved-label" id="savedLabel">Saved automatically</span>
+      </div>
+      <div class="settings-grid">
+        <label class="setting-control" for="workDuration">
+          <span class="setting-name">Focus duration</span>
+          <span class="setting-input"><input id="workDuration" type="number" min="1" max="120" value="25"><span>min</span></span>
+          <span class="range-wrap"><input id="workRange" type="range" min="1" max="120" value="25"><span class="range-limits"><span>1 min</span><span>120 min</span></span></span>
+        </label>
+        <label class="setting-control" for="breakDuration">
+          <span class="setting-name">Break duration</span>
+          <span class="setting-input"><input id="breakDuration" type="number" min="1" max="60" value="5"><span>min</span></span>
+          <span class="range-wrap"><input id="breakRange" type="range" min="1" max="60" value="5"><span class="range-limits"><span>1 min</span><span>60 min</span></span></span>
+        </label>
+        <div class="setting-control mode-setting">
+          <span class="setting-name">Automatic mode</span>
+          <button class="toggle-row" id="autoToggle" type="button" role="switch" aria-checked="true"><span class="toggle"><span></span></span><span><strong id="autoLabel">On</strong><small>Continue through each session</small></span></button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer"><span>FOCUSLINE / 2026</span><span class="footer-note">Your attention is the asset.</span></footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="script.js"></script>
+</body>
+</html>
