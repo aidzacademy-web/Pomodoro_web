@@ -819,3 +819,139 @@ button { cursor: pointer; }
 
   .button:hover { transform: none; }
 }
+
+/* =========================================================
+   Alerts — the end-of-session attention layer
+   ========================================================= */
+.alert-bar {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translate(-50%, -160%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(540px, calc(100% - 32px));
+  padding: 13px 14px 13px 18px;
+  background: var(--ink);
+  color: var(--on-ink);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.alert-bar.show {
+  transform: translate(-50%, 0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.alert-icon {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--coral);
+  flex: none;
+  animation: alertPulse 1.1s ease-in-out infinite;
+}
+
+.alert-text { flex: 1; min-width: 0; }
+
+.alert-text strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.alert-text small {
+  display: block;
+  font-size: 11px;
+  margin-top: 3px;
+  opacity: 0.72;
+}
+
+.alert-dismiss {
+  flex: none;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  border-radius: 2px;
+  padding: 8px 13px;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.85;
+  transition: opacity 0.2s ease;
+}
+
+.alert-dismiss:hover { opacity: 1; }
+
+.timer-ring.alerting .ring-progress,
+.timer-ring.alerting .timer-display > span:first-child {
+  animation: alertPulse 1.1s ease-in-out infinite;
+}
+
+@keyframes alertPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Alerts settings block ------------------------------------ */
+.alerts-block {
+  border-top: 1px solid var(--line);
+  margin-top: 34px;
+  padding-top: 28px;
+}
+
+.alerts-block .settings-heading { align-items: center; }
+
+.select-input { padding-bottom: 6px; }
+
+.select-input select {
+  border: 0;
+  outline: 0;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 500 17px var(--mono);
+  appearance: none;
+  cursor: pointer;
+}
+
+.select-input::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-bottom: 5px;
+  border-right: 1px solid var(--muted);
+  border-bottom: 1px solid var(--muted);
+  transform: rotate(45deg);
+  flex: none;
+}
+
+.permission-status {
+  margin: 0;
+  color: var(--muted);
+  font: 10px var(--mono);
+  line-height: 1.6;
+}
+
+.permission-status.warn { color: var(--coral-ink); }
+.permission-status.ok { color: var(--mint-dark); }
+
+@media (max-width: 480px) {
+  .alert-bar {
+    top: 12px;
+    gap: 10px;
+    padding: 11px 12px 11px 14px;
+  }
+
+  .alerts-block .settings-heading {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+}

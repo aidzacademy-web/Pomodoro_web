@@ -9,7 +9,7 @@
   <meta name="theme-color" content="#121a18" media="(prefers-color-scheme: dark)">
   <title>Focusline | Pomodoro Timer</title>
 
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f6b5b' stroke-width='3'/%3E%3Cpath d='M16 9v7h5' fill='none' stroke='%232f6b5b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f6b5b' stroke-width='3'/%3E%3Cpath d='M16 9v7h5' fill='none' stroke='%232f6b5b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -35,6 +35,15 @@
 
   <div class="ambient ambient-one" aria-hidden="true"></div>
   <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <div class="alert-bar" id="alertBar" role="alert" aria-live="assertive">
+    <span class="alert-icon" aria-hidden="true"></span>
+    <span class="alert-text">
+      <strong id="alertTitle">Focus session complete</strong>
+      <small id="alertBody">Time to step away from the screen.</small>
+    </span>
+    <button class="alert-dismiss" id="alertDismiss" type="button">Got it</button>
+  </div>
 
   <header class="topbar">
     <a class="brand" href="./" aria-label="Focusline home">
@@ -83,24 +92,24 @@
 
       <div class="timer-actions">
         <button class="button button-primary" id="startButton" type="button" aria-pressed="false">
-          <span class="button-icon" id="startIcon" aria-hidden="true">▶</span><span id="startLabel">Start focus</span>
+          <span class="button-icon" id="startIcon" aria-hidden="true">&#9654;</span><span id="startLabel">Start focus</span>
         </button>
         <button class="button button-secondary" id="resetButton" type="button">Reset</button>
         <button class="button button-quiet" id="skipButton" type="button">Skip session</button>
       </div>
 
-      <p class="next-up" id="nextUp">Next: a 5 minute break</p>
+      <p class="next-up" id="nextUp">Next: a break of 5 minutes</p>
       <p class="keyboard-hint">
-        <kbd>Space</kbd> start or pause<span class="hint-sep" aria-hidden="true">·</span>
-        <kbd>R</kbd> reset<span class="hint-sep" aria-hidden="true">·</span>
-        <kbd>S</kbd> skip<span class="hint-sep" aria-hidden="true">·</span>
+        <kbd>Space</kbd> start or pause<span class="hint-sep" aria-hidden="true">&middot;</span>
+        <kbd>R</kbd> reset<span class="hint-sep" aria-hidden="true">&middot;</span>
+        <kbd>S</kbd> skip<span class="hint-sep" aria-hidden="true">&middot;</span>
         <kbd>F</kbd> full screen
       </p>
     </section>
 
     <aside class="stats-panel" aria-label="Session progress">
       <div class="panel-heading">
-        <span>Today’s rhythm</span>
+        <span>Today&rsquo;s rhythm</span>
         <span class="panel-rule" aria-hidden="true"></span>
         <button class="ghost-button" id="resetStats" type="button">Clear</button>
       </div>
@@ -176,9 +185,8 @@
           </div>
         </div>
 
-        <div class="setting-control switch-stack">
-          <p class="setting-name">Session behaviour</p>
-
+        <div class="setting-control">
+          <p class="setting-name">Session flow</p>
           <button class="toggle-row" id="autoToggle" type="button" role="switch" aria-checked="true">
             <span class="toggle" aria-hidden="true"><span></span></span>
             <span class="toggle-text">
@@ -186,22 +194,76 @@
               <small>Roll straight into the next session</small>
             </span>
           </button>
+        </div>
+      </div>
 
-          <button class="toggle-row" id="soundToggle" type="button" role="switch" aria-checked="true">
-            <span class="toggle" aria-hidden="true"><span></span></span>
-            <span class="toggle-text">
-              <strong>Chime <span class="toggle-state" id="soundLabel">On</span></strong>
-              <small>A soft tone when a session ends</small>
-            </span>
-          </button>
+      <div class="alerts-block" aria-labelledby="alertsTitle">
+        <div class="settings-heading">
+          <div>
+            <p class="eyebrow">When a session ends</p>
+            <h2 id="alertsTitle">Alerts</h2>
+          </div>
+          <button class="button button-secondary" id="testAlert" type="button">Test alert</button>
+        </div>
 
-          <button class="toggle-row" id="notifyToggle" type="button" role="switch" aria-checked="false">
-            <span class="toggle" aria-hidden="true"><span></span></span>
-            <span class="toggle-text">
-              <strong>Desktop alerts <span class="toggle-state" id="notifyLabel">Off</span></strong>
-              <small>Get told even in another tab</small>
-            </span>
-          </button>
+        <div class="settings-grid">
+          <div class="setting-control">
+            <label class="setting-name" for="alarmSound">Alarm sound</label>
+            <div class="setting-input select-input">
+              <select id="alarmSound">
+                <option value="chime">Soft chime</option>
+                <option value="bell">Bell</option>
+                <option value="alarm">Alarm beeps</option>
+                <option value="rise">Rising tone</option>
+              </select>
+            </div>
+            <div class="range-wrap">
+              <input id="volumeRange" type="range" min="0" max="100" step="5" value="70" aria-label="Alarm volume">
+              <div class="range-limits"><span>volume</span><span id="volumeValue">70%</span></div>
+            </div>
+          </div>
+
+          <div class="setting-control switch-stack">
+            <p class="setting-name">How you&rsquo;re told</p>
+
+            <button class="toggle-row" id="soundToggle" type="button" role="switch" aria-checked="true">
+              <span class="toggle" aria-hidden="true"><span></span></span>
+              <span class="toggle-text">
+                <strong>Sound <span class="toggle-state" id="soundLabel">On</span></strong>
+                <small>Play the alarm when the clock runs out</small>
+              </span>
+            </button>
+
+            <button class="toggle-row" id="repeatToggle" type="button" role="switch" aria-checked="true">
+              <span class="toggle" aria-hidden="true"><span></span></span>
+              <span class="toggle-text">
+                <strong>Keep ringing <span class="toggle-state" id="repeatLabel">On</span></strong>
+                <small>Repeats until you click or press a key</small>
+              </span>
+            </button>
+          </div>
+
+          <div class="setting-control switch-stack">
+            <p class="setting-name">Desktop</p>
+
+            <button class="toggle-row" id="notifyToggle" type="button" role="switch" aria-checked="false">
+              <span class="toggle" aria-hidden="true"><span></span></span>
+              <span class="toggle-text">
+                <strong>System notification <span class="toggle-state" id="notifyLabel">Off</span></strong>
+                <small>Shows on your desktop even behind another window</small>
+              </span>
+            </button>
+
+            <button class="toggle-row" id="flashToggle" type="button" role="switch" aria-checked="true">
+              <span class="toggle" aria-hidden="true"><span></span></span>
+              <span class="toggle-text">
+                <strong>Flash the tab <span class="toggle-state" id="flashLabel">On</span></strong>
+                <small>Blinks the tab title and icon so you spot it</small>
+              </span>
+            </button>
+
+            <p class="permission-status" id="permissionStatus">Notifications not requested yet</p>
+          </div>
         </div>
       </div>
     </section>
