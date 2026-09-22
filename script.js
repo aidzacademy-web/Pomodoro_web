@@ -1310,7 +1310,10 @@ function guardHolding() {
 
 function syncGuard() {
   if (!guardAvailable()) return;
-  const wanted = settings.guardOn && (guardShouldWatch() || guardHolding());
+  /* guardHolding() stands on its own: it is only ever set by an explicit
+     request to see the camera (toggling on, calibrating, or a passing
+     check), and those must work even while the guard itself is off. */
+  const wanted = guardShouldWatch() || guardHolding();
   const live = guardView.status === 'watching' || guardView.status === 'loading';
 
   /* A page served from file:// can never open a camera, so retrying each
@@ -1412,12 +1415,21 @@ function runGuardCheck() {
     button.disabled = false;
     button.textContent = 'Check my camera';
 
+    guardView.checked = report;
+
     const node = elements.guardStatus;
     node.classList.remove('warn', 'ok');
     node.textContent = report.message;
     node.classList.add(report.ok ? 'ok' : 'warn');
-    guardView.checked = report;
-    showToast(report.ok ? 'Camera works' : 'Camera check failed');
+
+    if (report.ok) {
+      /* Seeing yourself is the proof; a sentence saying it works is not.
+         Open the preview so a passing check is visibly true. */
+      holdGuardPreview();
+      showToast('Everything works — showing the preview');
+    } else {
+      showToast('Check failed at the ' + (report.stage || 'camera') + ' stage');
+    }
   }).catch(function () {
     button.disabled = false;
     button.textContent = 'Check my camera';
@@ -1434,6 +1446,16 @@ function renderGuard(detail) {
   elements.guardLive.hidden = !live;
   elements.guardPreviewIdle.hidden = showing;
   elements.guardCalibrate.disabled = !live;
+
+  /* "Camera off" on its own reads as a fault. It is usually the correct,
+     intended state - the camera belongs to the focus session - so the
+     placeholder says which of those it is. */
+  if (!showing) {
+    elements.guardPreviewIdle.textContent =
+      status === 'error' ? 'Unavailable'
+        : !settings.guardOn ? 'Guard is off'
+          : 'Starts with your focus session';
+  }
 
   renderGuardChip();
 
@@ -1454,16 +1476,18 @@ function renderGuard(detail) {
     node.textContent = detail || 'Starting\u2026';
     return;
   }
+  /* A check verdict outranks the generic idle copy, but never the live
+     readout during a real focus session. */
+  if (guardView.checked && !guardShouldWatch()) {
+    node.textContent = guardView.checked.message;
+    node.classList.add(guardView.checked.ok ? 'ok' : 'warn');
+    return;
+  }
   if (live) {
     node.textContent = guardShouldWatch()
       ? 'Watching. ' + (Vision.REASONS[guardView.reason] || '')
       : 'Camera on for the preview. It only counts drift during a focus session.';
     node.classList.add('ok');
-    return;
-  }
-  if (guardView.checked && !guardView.checked.ok && status !== 'watching') {
-    node.textContent = guardView.checked.message;
-    node.classList.add('warn');
     return;
   }
   if (settings.guardOn) {

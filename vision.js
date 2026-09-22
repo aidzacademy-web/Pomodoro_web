@@ -39,6 +39,11 @@
   const DEVICE_QUERY_MS = 2500;
   const CAMERA_OPEN_MS = 12000;
 
+  /* A blocked CDN does not fail fast - a blackholed host just hangs the
+     connection - so the model load needs a ceiling too. Generous, because
+     this is a 3 MB download on a possibly slow line. */
+  const MODEL_LOAD_MS = 45000;
+
   /* Canonical MediaPipe face-mesh indices. */
   const LM = {
     nose: 1,
@@ -219,7 +224,19 @@
 
   async function loadModel() {
     if (guard.landmarker) return guard.landmarker;
+    const landmarker = await withTimeout(buildModel(), MODEL_LOAD_MS, TIMED_OUT);
+    if (landmarker === TIMED_OUT) {
+      const error = new Error('model load timed out');
+      error.name = 'ModelTimeoutError';
+      throw error;
+    }
+    guard.landmarker = landmarker;
+    return landmarker;
+  }
 
+  /* Builds and returns the landmarker without touching shared state, so
+     loadModel() alone decides whether a result is still wanted. */
+  async function buildModel() {
     /* Dynamic import: nothing is fetched until the guard is switched on,
        so the rest of the app stays dependency-free and offline-capable. */
     const vision = await import(/* webpackIgnore: true */ TASKS_BUNDLE);
@@ -236,13 +253,12 @@
     }
 
     try {
-      guard.landmarker = await build('GPU');
+      return await build('GPU');
     } catch (error) {
       /* No WebGL2 (remote desktops, blocklisted drivers, headless): the
          CPU delegate is slower but this only runs at ~7fps anyway. */
-      guard.landmarker = await build('CPU');
+      return build('CPU');
     }
-    return guard.landmarker;
   }
 
   /* Never block start-up on video.play(): its promise can reject under an
@@ -359,42 +375,67 @@
   }
 
   /* A report the settings panel can show on demand, so a failure can be
-     understood without opening devtools. */
+     understood without opening devtools.
+
+     It walks the SAME four stages start() does. An earlier version stopped
+     after the camera, which meant a blocked model CDN reported "camera
+     works" while the guard never actually came up - the check has to cover
+     everything the real thing needs, or it gives false confidence. */
   async function diagnose() {
+    const stages = { page: false, device: false, camera: false, model: false };
+
     const blocked = blockedReason();
-    if (blocked) return { ok: false, kind: 'blocked', message: blocked };
+    if (blocked) return { ok: false, kind: 'blocked', stage: 'page', stages: stages, message: blocked };
+    stages.page = true;
 
     const cameras = await countCameras();
     if (cameras === 0) {
       return {
-        ok: false,
-        kind: 'nodevice',
-        message: 'Windows reports no camera attached to this computer.'
+        ok: false, kind: 'nodevice', stage: 'device', stages: stages, cameras: 0,
+        message: 'Your system reports no camera attached to this computer.'
       };
     }
+    stages.device = true;
 
     let stream = null;
     try {
       stream = await requestStream();
     } catch (error) {
       const described = describeCameraError(error);
-      return { ok: false, kind: described.kind, message: described.message, cameras: cameras };
+      return {
+        ok: false, kind: described.kind, stage: 'camera', stages: stages,
+        cameras: cameras, message: described.message
+      };
     }
+    stages.camera = true;
 
     const track = stream.getVideoTracks()[0];
     const label = track && track.label ? track.label : 'camera';
-    const settingsInfo = track && track.getSettings ? track.getSettings() : {};
+    const info = track && track.getSettings ? track.getSettings() : {};
+    const describe = label + (info.width ? ' at ' + info.width + '×' + info.height : '');
     stream.getTracks().forEach(function (item) {
       try { item.stop(); } catch (error) { /* already stopped */ }
     });
 
+    /* The model is the other half of the guard, and it fails for entirely
+       different reasons: offline, a corporate proxy, an ad blocker, or an
+       extension blocking cdn.jsdelivr.net. */
+    try {
+      await loadModel();
+    } catch (error) {
+      return {
+        ok: false, kind: 'model', stage: 'model', stages: stages, cameras: cameras,
+        message: 'Your camera works (' + describe + '), but the face model could not be '
+          + 'downloaded. Something is blocking cdn.jsdelivr.net or '
+          + 'storage.googleapis.com — usually an ad blocker, a VPN or a work network.'
+      };
+    }
+    stages.model = true;
+
     return {
-      ok: true,
-      kind: 'ok',
-      cameras: cameras,
-      message: 'Working: ' + label
-        + (settingsInfo.width ? ' at ' + settingsInfo.width + '×' + settingsInfo.height : '')
-        + '. The guard is ready.'
+      ok: true, kind: 'ok', stage: 'done', stages: stages, cameras: cameras,
+      message: 'All good: ' + describe + ', and the face model loaded. '
+        + 'Switch the guard on and it will start with your next focus session.'
     };
   }
 
