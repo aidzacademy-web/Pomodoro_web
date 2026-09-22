@@ -34,6 +34,11 @@
 
   const CALIBRATION_MS = 1600;
 
+  /* enumerateDevices() and getUserMedia() both sit unresolved on some
+     setups instead of rejecting, so neither is ever awaited unguarded. */
+  const DEVICE_QUERY_MS = 2500;
+  const CAMERA_OPEN_MS = 12000;
+
   /* Canonical MediaPipe face-mesh indices. */
   const LM = {
     nose: 1,
@@ -264,11 +269,164 @@
     });
   }
 
-  async function openCamera(video) {
-    const stream = await global.navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' },
-      audio: false
+  /* getUserMedia has half a dozen distinct failure modes and they need
+     completely different fixes: a missing camera, a camera held by Teams,
+     a browser permission, and an OS privacy switch are not the same
+     problem. Collapsing them into "no camera could be opened" leaves the
+     reader with nothing to do. */
+  const CAMERA_ERRORS = {
+    NotFoundError: {
+      kind: 'nodevice',
+      message: 'No camera is attached to this computer. Plug a webcam in, or leave the guard off.'
+    },
+    DevicesNotFoundError: {
+      kind: 'nodevice',
+      message: 'No camera is attached to this computer. Plug a webcam in, or leave the guard off.'
+    },
+    NotReadableError: {
+      kind: 'busy',
+      message: 'Your camera is already in use by another app. Close Teams, Zoom, OBS or the Camera app, then try again.'
+    },
+    TrackStartError: {
+      kind: 'busy',
+      message: 'Your camera is already in use by another app. Close Teams, Zoom, OBS or the Camera app, then try again.'
+    },
+    NotAllowedError: {
+      kind: 'denied',
+      message: 'Camera access was declined. Allow it from the padlock in the address bar, and check Windows Settings › Privacy › Camera.'
+    },
+    PermissionDeniedError: {
+      kind: 'denied',
+      message: 'Camera access was declined. Allow it from the padlock in the address bar, and check Windows Settings › Privacy › Camera.'
+    },
+    SecurityError: {
+      kind: 'denied',
+      message: 'The browser blocked camera access on this page. It must be served over https:// or http://localhost.'
+    },
+    TimeoutError: {
+      kind: 'camera',
+      message: 'The camera did not respond. It may be held by another app, or disabled in Windows Settings › Privacy › Camera.'
+    },
+    AbortError: {
+      kind: 'camera',
+      message: 'The camera was found but could not be started. This is usually a driver problem — try unplugging it, or reboot.'
+    }
+  };
+
+  function isConstraintError(error) {
+    return Boolean(error) && (error.name === 'OverconstrainedError'
+      || error.name === 'ConstraintNotSatisfiedError');
+  }
+
+  function describeCameraError(error) {
+    const name = (error && error.name) || 'UnknownError';
+    const known = CAMERA_ERRORS[name];
+    if (known) return { kind: known.kind, message: known.message + ' (' + name + ')' };
+    return {
+      kind: 'camera',
+      message: 'The camera could not be opened (' + name + ').'
+    };
+  }
+
+  /* Resolves with `fallback` if the promise takes too long. Device APIs
+     can sit unresolved forever on some drivers and virtualised setups, and
+     nothing here is worth hanging start-up over. */
+  function withTimeout(promise, ms, fallback) {
+    return Promise.race([
+      promise,
+      new Promise(function (resolve) {
+        global.setTimeout(function () { resolve(fallback); }, ms);
+      })
+    ]);
+  }
+
+  /* Counting video inputs answers "is there a camera at all" without
+     asking for permission. Chromium lists devices with blank labels
+     before consent, so the count is trustworthy even then.
+
+     Returns null for "could not tell" - never confuse that with 0, which
+     is a positive claim that the machine has no camera. */
+  async function countCameras() {
+    const media = global.navigator && global.navigator.mediaDevices;
+    if (!media || !media.enumerateDevices) return null;
+    try {
+      const devices = await withTimeout(media.enumerateDevices(), DEVICE_QUERY_MS, null);
+      if (!devices || typeof devices.filter !== 'function') return null;
+      return devices.filter(function (device) { return device.kind === 'videoinput'; }).length;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /* A report the settings panel can show on demand, so a failure can be
+     understood without opening devtools. */
+  async function diagnose() {
+    const blocked = blockedReason();
+    if (blocked) return { ok: false, kind: 'blocked', message: blocked };
+
+    const cameras = await countCameras();
+    if (cameras === 0) {
+      return {
+        ok: false,
+        kind: 'nodevice',
+        message: 'Windows reports no camera attached to this computer.'
+      };
+    }
+
+    let stream = null;
+    try {
+      stream = await requestStream();
+    } catch (error) {
+      const described = describeCameraError(error);
+      return { ok: false, kind: described.kind, message: described.message, cameras: cameras };
+    }
+
+    const track = stream.getVideoTracks()[0];
+    const label = track && track.label ? track.label : 'camera';
+    const settingsInfo = track && track.getSettings ? track.getSettings() : {};
+    stream.getTracks().forEach(function (item) {
+      try { item.stop(); } catch (error) { /* already stopped */ }
     });
+
+    return {
+      ok: true,
+      kind: 'ok',
+      cameras: cameras,
+      message: 'Working: ' + label
+        + (settingsInfo.width ? ' at ' + settingsInfo.width + '×' + settingsInfo.height : '')
+        + '. The guard is ready.'
+    };
+  }
+
+  /* Preferred constraints first; a camera that cannot meet them still
+     works fine at whatever it does support. */
+  const TIMED_OUT = { __timedOut: true };
+
+  async function requestStream() {
+    const media = global.navigator.mediaDevices;
+    let stream;
+    try {
+      stream = await withTimeout(media.getUserMedia({
+        video: { width: { ideal: 320 }, height: { ideal: 240 }, facingMode: 'user' },
+        audio: false
+      }), CAMERA_OPEN_MS, TIMED_OUT);
+    } catch (error) {
+      if (!isConstraintError(error)) throw error;
+      /* A camera that cannot meet the preferred size still works fine at
+         whatever it does support. */
+      stream = await withTimeout(media.getUserMedia({ video: true, audio: false }),
+        CAMERA_OPEN_MS, TIMED_OUT);
+    }
+    if (stream === TIMED_OUT) {
+      const error = new Error('camera open timed out');
+      error.name = 'TimeoutError';
+      throw error;
+    }
+    return stream;
+  }
+
+  async function openCamera(video) {
+    const stream = await requestStream();
     guard.stream = stream;
     video.srcObject = stream;
     video.muted = true;
@@ -296,16 +454,23 @@
     guard.enabled = true;
     setStatus('loading', 'Starting the camera…');
 
+    /* Ask the OS before asking the user: if nothing is plugged in, say so
+       plainly rather than surfacing a permission prompt that cannot help. */
+    const cameras = await countCameras();
+    if (cameras === 0) {
+      guard.enabled = false;
+      setStatus('error',
+        'No camera is attached to this computer. Plug a webcam in, or leave the guard off.',
+        'nodevice');
+      return false;
+    }
+
     try {
       await openCamera(guard.video);
     } catch (error) {
       guard.enabled = false;
-      const denied = error && (error.name === 'NotAllowedError' || error.name === 'SecurityError');
-      setStatus('error',
-        denied
-          ? 'Camera access was declined. Allow it from the padlock in the address bar.'
-          : 'No camera could be opened.',
-        denied ? 'denied' : 'camera');
+      const described = describeCameraError(error);
+      setStatus('error', described.message, described.kind);
       releaseCamera();
       return false;
     }
@@ -485,6 +650,8 @@
     on: on,
     isSupported: isSupported,
     blockedReason: blockedReason,
+    diagnose: diagnose,
+    countCameras: countCameras,
     getStatus: function () {
       return {
         status: guard.status, detail: guard.detail, reason: guard.reason,

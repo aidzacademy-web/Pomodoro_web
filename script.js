@@ -144,7 +144,7 @@ const ELEMENT_IDS = [
   'ambientSound', 'ambientVolume', 'ambientVolumeValue', 'ambientPreview',
   'guardToggle', 'guardLabel', 'guardNotifyToggle', 'guardNotifyLabel', 'guardStatus',
   'guardSensitivity', 'guardPatienceNote', 'guardPreview', 'guardVideo', 'guardPreviewIdle',
-  'guardLive', 'guardMeter', 'guardMeterFill', 'guardCalibrate',
+  'guardLive', 'guardMeter', 'guardMeterFill', 'guardCalibrate', 'guardCheck',
   'guardChip', 'guardDot', 'guardChipText',
   'soundToggle', 'soundLabel', 'repeatToggle', 'repeatLabel',
   'flashToggle', 'flashLabel', 'notifyToggle', 'notifyLabel', 'permissionStatus',
@@ -1255,6 +1255,7 @@ function setupGuard() {
     settings.guardOn = false;
     elements.guardToggle.disabled = true;
     elements.guardCalibrate.disabled = true;
+    elements.guardCheck.disabled = true;
     return;
   }
 
@@ -1399,6 +1400,31 @@ function playNudge() {
   });
 }
 
+/* Runs the camera check on demand and leaves the verdict on screen, so a
+   failure can be understood without opening devtools. */
+function runGuardCheck() {
+  if (!guardAvailable()) return;
+  const button = elements.guardCheck;
+  button.disabled = true;
+  button.textContent = 'Checking…';
+
+  Vision.diagnose().then(function (report) {
+    button.disabled = false;
+    button.textContent = 'Check my camera';
+
+    const node = elements.guardStatus;
+    node.classList.remove('warn', 'ok');
+    node.textContent = report.message;
+    node.classList.add(report.ok ? 'ok' : 'warn');
+    guardView.checked = report;
+    showToast(report.ok ? 'Camera works' : 'Camera check failed');
+  }).catch(function () {
+    button.disabled = false;
+    button.textContent = 'Check my camera';
+    showToast('The camera check could not run');
+  });
+}
+
 function renderGuard(detail) {
   const status = guardView.status;
   const live = status === 'watching';
@@ -1433,6 +1459,11 @@ function renderGuard(detail) {
       ? 'Watching. ' + (Vision.REASONS[guardView.reason] || '')
       : 'Camera on for the preview. It only counts drift during a focus session.';
     node.classList.add('ok');
+    return;
+  }
+  if (guardView.checked && !guardView.checked.ok && status !== 'watching') {
+    node.textContent = guardView.checked.message;
+    node.classList.add('warn');
     return;
   }
   if (settings.guardOn) {
@@ -2554,6 +2585,7 @@ function attachEvents() {
     syncToggles();
     schedulePersist();
     if (settings.guardOn) {
+      guardView.checked = null;
       holdGuardPreview();
       showToast('Focus guard on - the camera opens during focus sessions');
     } else {
@@ -2577,6 +2609,8 @@ function attachEvents() {
     if (Vision) Vision.setSensitivity(settings.guardSensitivity);
     schedulePersist();
   });
+
+  elements.guardCheck.addEventListener('click', runGuardCheck);
 
   elements.guardCalibrate.addEventListener('click', function () {
     if (!Vision) return;

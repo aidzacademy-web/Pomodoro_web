@@ -762,6 +762,14 @@ button { cursor: pointer; }
 
 .guard-meter.is-hot .guard-meter-fill { background: var(--coral); }
 
+.guard-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.guard-buttons .button { flex: 1 1 auto; }
+
 .next-up {
   text-align: center;
   margin: 16px 0 0;
