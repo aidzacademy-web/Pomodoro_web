@@ -1,11 +1,18 @@
 'use strict';
 
 /* =========================================================
-   Focusline - pomodoro timer
+   Focusline - a pomodoro timer for deep work
+
+   Layout of this file:
+     1. Constants          6. Tasks
+     2. Storage            7. Alerts, audio, notifications
+     3. Helpers            8. Rendering (timer view)
+     4. History            9. Insights (stats + charts)
+     5. Timer             10. Events
    ========================================================= */
 
-const STORAGE_KEY = 'focusline-state-v3';
-const LEGACY_KEYS = ['focusline-state-v2', 'focusline-pomodoro-settings'];
+const STORAGE_KEY = 'focusline-state-v4';
+const LEGACY_KEYS = ['focusline-state-v3', 'focusline-state-v2', 'focusline-pomodoro-settings'];
 const THEME_KEY = 'focusline-theme';
 const TICK_MS = 250;
 
@@ -14,18 +21,26 @@ const ALARM_INTERVAL_MS = 4000;
 const ALARM_MAX_REPEATS = 15;
 const ALARM_PRESCHEDULE_S = 30;
 
+/* A session shorter than this is treated as a false start and not recorded. */
+const MIN_RECORDED_MS = 30 * 1000;
+const HISTORY_LIMIT = 5000;
+
 const DEFAULT_SETTINGS = {
   workMinutes: 25,
   breakMinutes: 5,
   longBreakMinutes: 15,
   roundsBeforeLongBreak: 4,
+  dailyGoalMinutes: 120,
   autoMode: true,
+  strictMode: false,
   soundOn: true,
   repeatAlarm: true,
   flashTab: true,
   notificationsOn: false,
   alarmSound: 'chime',
-  volume: 0.7
+  volume: 0.7,
+  ambientSound: 'none',
+  ambientVolume: 0.35
 };
 
 const MODES = {
@@ -35,10 +50,17 @@ const MODES = {
 };
 
 const CONTROLS = {
-  work: { field: 'workMinutes', min: 1, max: 120, number: 'workDuration', range: 'workRange', mode: 'work' },
+  work: { field: 'workMinutes', min: 1, max: 180, number: 'workDuration', range: 'workRange', mode: 'work' },
   break: { field: 'breakMinutes', min: 1, max: 60, number: 'breakDuration', range: 'breakRange', mode: 'break' },
   long: { field: 'longBreakMinutes', min: 1, max: 60, number: 'longBreakDuration', range: 'longBreakRange', mode: 'long' },
-  rounds: { field: 'roundsBeforeLongBreak', min: 2, max: 8, number: 'roundsInput', range: 'roundsRange', mode: null }
+  rounds: { field: 'roundsBeforeLongBreak', min: 2, max: 8, number: 'roundsInput', range: 'roundsRange', mode: null },
+  goal: { field: 'dailyGoalMinutes', min: 15, max: 720, number: 'goalInput', range: 'goalRange', mode: null }
+};
+
+const PRESETS = {
+  classic: { workMinutes: 25, breakMinutes: 5, longBreakMinutes: 15, roundsBeforeLongBreak: 4 },
+  deep: { workMinutes: 50, breakMinutes: 10, longBreakMinutes: 25, roundsBeforeLongBreak: 3 },
+  ultradian: { workMinutes: 90, breakMinutes: 20, longBreakMinutes: 30, roundsBeforeLongBreak: 2 }
 };
 
 /* Alarms are synthesised, so there is no audio file to ship or fail to load. */
@@ -68,6 +90,19 @@ const ALARM_SOUNDS = {
   }
 };
 
+/* Each soundscape is a noise colour plus a filter shape. */
+const AMBIENCES = {
+  brown: { noise: 'brown', filter: { type: 'lowpass', frequency: 1200, Q: 0.7 }, gain: 0.55 },
+  pink: { noise: 'pink', filter: { type: 'lowpass', frequency: 3200, Q: 0.6 }, gain: 0.35 },
+  rain: { noise: 'white', filter: { type: 'bandpass', frequency: 1400, Q: 0.6 }, gain: 0.5, shimmer: 0.35 },
+  waves: { noise: 'brown', filter: { type: 'lowpass', frequency: 700, Q: 0.9 }, gain: 0.7, swell: 0.09 },
+  cafe: { noise: 'pink', filter: { type: 'lowpass', frequency: 420, Q: 1.1 }, gain: 0.8, swell: 0.22 }
+};
+
+/* Categorical slots, in fixed order, for the project split. Assigned by
+   entity so a filter can never repaint the survivors. */
+const SERIES_SLOTS = 6;
+
 const FAVICONS = {
   idle: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f6b5b' stroke-width='3'/%3E%3Cpath d='M16 9v7h5' fill='none' stroke='%232f6b5b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E",
   alert: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23e47b62'/%3E%3Cpath d='M16 8v8h5' fill='none' stroke='%23fffdf9' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E"
@@ -75,17 +110,30 @@ const FAVICONS = {
 
 const ELEMENT_IDS = [
   'headerStatusText', 'themeToggle', 'themeLabel', 'favicon',
+  'tabTimer', 'tabInsights', 'viewTimer', 'viewInsights',
   'timerPanel', 'modePill', 'modeLabel', 'cycleNumber', 'fullscreenButton',
+  'nowWorking', 'activeTaskButton', 'activeTaskDot', 'activeTaskName',
   'timerRing', 'progressRing', 'timeDisplay', 'timeCaption',
-  'startButton', 'startIcon', 'startLabel', 'resetButton', 'skipButton', 'nextUp',
-  'completedSessions', 'focusMinutes', 'sessionState', 'trackDots', 'trackCount', 'resetStats',
+  'startButton', 'startIcon', 'startLabel', 'resetButton', 'skipButton',
+  'distractionRow', 'distractionButton', 'distractionCount', 'nextUp',
+  'todayFocus', 'goalTarget', 'goalMeter', 'goalFill', 'goalCaption',
+  'completedSessions', 'streakValue', 'todayDistractions', 'trackDots', 'trackCount', 'resetStats',
+  'taskForm', 'taskTitle', 'taskProject', 'taskEstimate', 'projectList', 'taskList', 'taskEmpty', 'clearDoneTasks',
   'workDuration', 'workRange', 'breakDuration', 'breakRange',
-  'longBreakDuration', 'longBreakRange', 'roundsInput', 'roundsRange',
-  'autoToggle', 'autoLabel', 'soundToggle', 'soundLabel', 'repeatToggle', 'repeatLabel',
+  'longBreakDuration', 'longBreakRange', 'roundsInput', 'roundsRange', 'goalInput', 'goalRange',
+  'autoToggle', 'autoLabel', 'strictToggle', 'strictLabel',
+  'ambientSound', 'ambientVolume', 'ambientVolumeValue', 'ambientPreview',
+  'soundToggle', 'soundLabel', 'repeatToggle', 'repeatLabel',
   'flashToggle', 'flashLabel', 'notifyToggle', 'notifyLabel', 'permissionStatus',
   'alarmSound', 'volumeRange', 'volumeValue', 'testAlert',
   'alertBar', 'alertTitle', 'alertBody', 'alertDismiss',
-  'savedLabel', 'toast'
+  'savedLabel', 'toast',
+  'heroValue', 'heroDelta',
+  'kpiSessions', 'kpiSessionsDelta', 'kpiAverage', 'kpiAverageDelta',
+  'kpiDaily', 'kpiDailySpark', 'kpiStreak', 'kpiStreakDetail',
+  'kpiCompletion', 'kpiCompletionDetail', 'kpiDistraction', 'kpiDistractionDetail',
+  'chartTrend', 'chartCalendar', 'chartHours', 'chartWeekdays', 'chartProjects', 'chartFocusQuality',
+  'dataSummary', 'exportJson', 'exportCsv', 'importButton', 'importInput', 'wipeData'
 ];
 
 const elements = {};
@@ -100,10 +148,17 @@ const state = {
   round: 0,
   endTime: null,
   remainingMs: DEFAULT_SETTINGS.workMinutes * 60 * 1000,
-  stats: { date: todayKey(), completed: 0, focusMs: 0 },
+  startedAt: null,
+  distractions: 0,
+  activeTaskId: null,
   tickId: null,
   wakeLock: null
 };
+
+let history = [];
+let tasks = [];
+let projectSlots = {};
+let dayIndexCache = null;
 
 const alertState = {
   active: false,
@@ -114,9 +169,16 @@ const alertState = {
   flashTitle: ''
 };
 
+const ambient = { source: null, gain: null, filter: null, lfo: null, lfoGain: null, previewTimer: null };
+
 const rendered = {};
+const charts = {};
 const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+const Viz = window.FocuslineCharts;
+
 let themePreference = 'auto';
+let currentView = 'timer';
+let insightsRange = 90;
 let circumference = 0;
 let audioContext = null;
 let scheduledNodes = [];
@@ -124,6 +186,7 @@ let alarmPrescheduled = false;
 let persistTimeout = null;
 let savedTimeout = null;
 let toastTimeout = null;
+let insightsTimeout = null;
 let sessionExpiredWhileAway = false;
 
 init();
@@ -138,8 +201,11 @@ function init() {
   syncToggles();
   applyTheme(readStore(THEME_KEY) || 'auto');
   renderPermissionStatus();
+  buildCharts();
   attachEvents();
+  renderTasks();
   render();
+  applyRoute(location.hash);
 
   if (sessionExpiredWhileAway) {
     showToast('Your last session ran out while the tab was closed');
@@ -182,20 +248,27 @@ function readJSON(key) {
   }
 }
 
-function persist() {
-  writeStore(STORAGE_KEY, JSON.stringify({
-    version: 3,
+function snapshot() {
+  return {
+    version: 4,
     settings: settings,
-    stats: state.stats,
+    history: history,
+    tasks: tasks,
+    projectSlots: projectSlots,
     session: {
       mode: state.mode,
       cycle: state.cycle,
       round: state.round,
       remainingMs: state.remainingMs,
       endTime: state.endTime,
-      isRunning: state.isRunning
+      isRunning: state.isRunning,
+      activeTaskId: state.activeTaskId
     }
-  }));
+  };
+}
+
+function persist() {
+  writeStore(STORAGE_KEY, JSON.stringify(snapshot()));
 }
 
 function schedulePersist() {
@@ -222,30 +295,115 @@ function loadPersistedState() {
   }
   if (!saved) return;
 
-  if (saved.settings) {
-    Object.keys(CONTROLS).forEach(function (key) {
-      const control = CONTROLS[key];
-      settings[control.field] = clamp(saved.settings[control.field], control.min, control.max, DEFAULT_SETTINGS[control.field]);
-    });
-    settings.autoMode = saved.settings.autoMode !== false;
-    settings.soundOn = saved.settings.soundOn !== false;
-    settings.repeatAlarm = saved.settings.repeatAlarm !== false;
-    settings.flashTab = saved.settings.flashTab !== false;
-    settings.alarmSound = ALARM_SOUNDS[saved.settings.alarmSound] ? saved.settings.alarmSound : DEFAULT_SETTINGS.alarmSound;
-    settings.volume = Number.isFinite(Number(saved.settings.volume))
-      ? Math.min(1, Math.max(0, Number(saved.settings.volume)))
-      : DEFAULT_SETTINGS.volume;
-    settings.notificationsOn = saved.settings.notificationsOn === true
-      && 'Notification' in window
-      && Notification.permission === 'granted';
-  }
+  if (saved.settings) applySavedSettings(saved.settings);
+  history = sanitiseHistory(saved.history);
+  tasks = sanitiseTasks(saved.tasks);
+  projectSlots = sanitiseSlots(saved.projectSlots);
+  invalidateDays();
 
-  if (saved.stats && saved.stats.date === todayKey()) {
-    state.stats.completed = Math.max(0, toInt(saved.stats.completed, 0));
-    state.stats.focusMs = Math.max(0, toInt(saved.stats.focusMs, 0));
+  /* A v3 save has a day counter but no per-session records. Seed one
+     summary row so the older total is not silently lost. */
+  if (!saved.history && saved.stats && saved.stats.focusMs > 0 && saved.stats.date) {
+    const midday = new Date(saved.stats.date + 'T12:00:00');
+    if (!Number.isNaN(midday.getTime())) {
+      history.push({
+        id: 'legacy-' + saved.stats.date,
+        mode: 'work',
+        startedAt: midday.getTime(),
+        endedAt: midday.getTime() + toInt(saved.stats.focusMs, 0),
+        plannedMs: toInt(saved.stats.focusMs, 0),
+        actualMs: toInt(saved.stats.focusMs, 0),
+        completed: true,
+        sessionCount: Math.max(1, toInt(saved.stats.completed, 1)),
+        taskId: null,
+        taskTitle: '',
+        project: '',
+        distractions: 0
+      });
+    }
   }
 
   restoreSession(saved.session);
+}
+
+function applySavedSettings(saved) {
+  Object.keys(CONTROLS).forEach(function (key) {
+    const control = CONTROLS[key];
+    settings[control.field] = clamp(saved[control.field], control.min, control.max, DEFAULT_SETTINGS[control.field]);
+  });
+  settings.autoMode = saved.autoMode !== false;
+  settings.strictMode = saved.strictMode === true;
+  settings.soundOn = saved.soundOn !== false;
+  settings.repeatAlarm = saved.repeatAlarm !== false;
+  settings.flashTab = saved.flashTab !== false;
+  settings.alarmSound = ALARM_SOUNDS[saved.alarmSound] ? saved.alarmSound : DEFAULT_SETTINGS.alarmSound;
+  settings.ambientSound = AMBIENCES[saved.ambientSound] ? saved.ambientSound : 'none';
+  settings.volume = normaliseVolume(saved.volume, DEFAULT_SETTINGS.volume);
+  settings.ambientVolume = normaliseVolume(saved.ambientVolume, DEFAULT_SETTINGS.ambientVolume);
+  settings.notificationsOn = saved.notificationsOn === true
+    && 'Notification' in window
+    && Notification.permission === 'granted';
+}
+
+function normaliseVolume(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : fallback;
+}
+
+function sanitiseHistory(raw) {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = [];
+  raw.forEach(function (entry) {
+    if (!entry || typeof entry !== 'object') return;
+    const startedAt = toInt(entry.startedAt, 0);
+    const actualMs = Math.max(0, toInt(entry.actualMs, 0));
+    if (!startedAt || !actualMs) return;
+    cleaned.push({
+      id: typeof entry.id === 'string' ? entry.id : makeId(),
+      mode: MODES[entry.mode] ? entry.mode : 'work',
+      startedAt: startedAt,
+      endedAt: Math.max(startedAt, toInt(entry.endedAt, startedAt + actualMs)),
+      plannedMs: Math.max(0, toInt(entry.plannedMs, actualMs)),
+      actualMs: actualMs,
+      completed: entry.completed !== false,
+      sessionCount: Math.max(1, toInt(entry.sessionCount, 1)),
+      taskId: typeof entry.taskId === 'string' ? entry.taskId : null,
+      taskTitle: typeof entry.taskTitle === 'string' ? entry.taskTitle.slice(0, 120) : '',
+      project: typeof entry.project === 'string' ? entry.project.slice(0, 40) : '',
+      distractions: Math.max(0, toInt(entry.distractions, 0))
+    });
+  });
+  cleaned.sort(function (a, b) { return a.startedAt - b.startedAt; });
+  return cleaned.slice(-HISTORY_LIMIT);
+}
+
+function sanitiseSlots(raw) {
+  const clean = {};
+  if (!raw || typeof raw !== 'object') return clean;
+  Object.keys(raw).forEach(function (key) {
+    const slot = clamp(raw[key], 1, SERIES_SLOTS, 0);
+    if (slot) clean[key] = slot;
+  });
+  return clean;
+}
+
+function sanitiseTasks(raw) {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = [];
+  raw.forEach(function (entry) {
+    if (!entry || typeof entry !== 'object') return;
+    const title = typeof entry.title === 'string' ? entry.title.trim().slice(0, 120) : '';
+    if (!title) return;
+    cleaned.push({
+      id: typeof entry.id === 'string' ? entry.id : makeId(),
+      title: title,
+      project: typeof entry.project === 'string' ? entry.project.trim().slice(0, 40) : '',
+      estimate: clamp(entry.estimate, 1, 24, 2),
+      done: entry.done === true,
+      createdAt: toInt(entry.createdAt, Date.now())
+    });
+  });
+  return cleaned.slice(0, 200);
 }
 
 function restoreSession(session) {
@@ -255,6 +413,7 @@ function restoreSession(session) {
   if (MODES[session.mode]) state.mode = session.mode;
   state.cycle = Math.max(1, toInt(session.cycle, 1));
   state.round = clamp(session.round, 0, settings.roundsBeforeLongBreak, 0);
+  if (typeof session.activeTaskId === 'string') state.activeTaskId = session.activeTaskId;
 
   const remaining = session.isRunning && Number.isFinite(session.endTime)
     ? session.endTime - Date.now()
@@ -283,11 +442,30 @@ function toInt(value, fallback) {
   return Number.isFinite(parsed) ? Math.round(parsed) : fallback;
 }
 
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function dayKey(date) {
+  return date.getFullYear() + '-'
+    + String(date.getMonth() + 1).padStart(2, '0') + '-'
+    + String(date.getDate()).padStart(2, '0');
+}
+
 function todayKey() {
-  const now = new Date();
-  return now.getFullYear() + '-'
-    + String(now.getMonth() + 1).padStart(2, '0') + '-'
-    + String(now.getDate()).padStart(2, '0');
+  return dayKey(new Date());
+}
+
+function startOfDay(date) {
+  const copy = new Date(date);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function addDays(date, count) {
+  const copy = new Date(date);
+  copy.setDate(copy.getDate() + count);
+  return copy;
 }
 
 function durationFor(mode) {
@@ -298,9 +476,103 @@ function plural(minutes) {
   return minutes + ' minute' + (minutes > 1 ? 's' : '');
 }
 
-function ensureToday() {
-  if (state.stats.date === todayKey()) return;
-  state.stats = { date: todayKey(), completed: 0, focusMs: 0 };
+/* A function declaration, not a const: init() runs above this line. */
+function formatMinutes(minutes) {
+  return Viz.formatMinutes(minutes);
+}
+
+function formatClock(hour) {
+  const suffix = hour < 12 ? 'am' : 'pm';
+  const display = hour % 12 === 0 ? 12 : hour % 12;
+  return display + suffix;
+}
+
+function activeTask() {
+  if (!state.activeTaskId) return null;
+  return tasks.find(function (task) { return task.id === state.activeTaskId; }) || null;
+}
+
+/* =========================================================
+   History
+   ========================================================= */
+function recordSession(actualMs, completed) {
+  const task = activeTask();
+  const startedAt = state.startedAt || (Date.now() - actualMs);
+
+  history.push({
+    id: makeId(),
+    mode: 'work',
+    startedAt: startedAt,
+    endedAt: Date.now(),
+    plannedMs: durationFor('work'),
+    actualMs: actualMs,
+    completed: completed,
+    sessionCount: 1,
+    taskId: task ? task.id : null,
+    taskTitle: task ? task.title : '',
+    project: task ? task.project : '',
+    distractions: state.distractions
+  });
+
+  if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
+  invalidateDays();
+}
+
+/* render() runs on every tick, so the full-history rollup is cached and
+   invalidated only when history actually changes. */
+function invalidateDays() {
+  dayIndexCache = null;
+}
+
+function allDays() {
+  if (!dayIndexCache) dayIndexCache = summariseDays(history);
+  return dayIndexCache;
+}
+
+/* Work sessions grouped by calendar day. */
+function summariseDays(sessions) {
+  const index = new Map();
+  sessions.forEach(function (entry) {
+    if (entry.mode !== 'work') return;
+    const key = dayKey(new Date(entry.startedAt));
+    let day = index.get(key);
+    if (!day) {
+      day = { minutes: 0, sessions: 0, completed: 0, skipped: 0, distractions: 0 };
+      index.set(key, day);
+    }
+    day.minutes += entry.actualMs / 60000;
+    day.sessions += entry.sessionCount;
+    day.distractions += entry.distractions;
+    if (entry.completed) day.completed += entry.sessionCount;
+    else day.skipped += entry.sessionCount;
+  });
+  return index;
+}
+
+function todaySummary() {
+  const day = allDays().get(todayKey());
+  return day || { minutes: 0, sessions: 0, completed: 0, skipped: 0, distractions: 0 };
+}
+
+/* Consecutive days, ending today or yesterday, with a completed focus session. */
+function computeStreak() {
+  const days = allDays();
+  let cursor = startOfDay(new Date());
+  if (!hasFocus(days, cursor)) {
+    cursor = addDays(cursor, -1);
+    if (!hasFocus(days, cursor)) return 0;
+  }
+  let streak = 0;
+  while (hasFocus(days, cursor)) {
+    streak += 1;
+    cursor = addDays(cursor, -1);
+  }
+  return streak;
+}
+
+function hasFocus(days, date) {
+  const day = days.get(dayKey(date));
+  return Boolean(day && day.completed > 0);
 }
 
 /* =========================================================
@@ -313,12 +585,18 @@ function start() {
   }
   if (state.remainingMs <= 0) state.remainingMs = durationFor(state.mode);
 
+  if (!state.startedAt) {
+    state.startedAt = Date.now();
+    if (state.mode === 'work') state.distractions = 0;
+  }
+
   state.isRunning = true;
   state.endTime = Date.now() + state.remainingMs;
   state.tickId = window.setInterval(tick, TICK_MS);
 
   unlockAudio();
   requestWakeLock();
+  syncAmbient();
   persist();
   render();
 }
@@ -338,6 +616,7 @@ function stopTicking() {
   state.endTime = null;
   cancelScheduledAlarm();
   releaseWakeLock();
+  syncAmbient();
 }
 
 function tick() {
@@ -349,10 +628,13 @@ function tick() {
 }
 
 function reset() {
+  if (!confirmAbandon('reset the timer')) return;
   stopTicking();
   state.mode = 'work';
   state.cycle = 1;
   state.round = 0;
+  state.startedAt = null;
+  state.distractions = 0;
   state.remainingMs = durationFor('work');
   persist();
   render();
@@ -360,15 +642,21 @@ function reset() {
 }
 
 function skip() {
+  if (!confirmAbandon('skip this session')) return;
   if (state.isRunning) {
     state.remainingMs = Math.max(0, state.endTime - Date.now());
   }
   completeSession(true);
 }
 
-function completeSession(wasSkipped) {
-  ensureToday();
+/* Strict focus makes abandoning a running focus session a deliberate act. */
+function confirmAbandon(action) {
+  if (!settings.strictMode) return true;
+  if (!state.isRunning || state.mode !== 'work') return true;
+  return window.confirm('Strict focus is on. Really ' + action + '?');
+}
 
+function completeSession(wasSkipped) {
   const finished = state.mode;
   const wasWork = finished === 'work';
   const elapsedMs = Math.max(0, durationFor(finished) - Math.max(0, state.remainingMs));
@@ -378,11 +666,10 @@ function completeSession(wasSkipped) {
   state.isRunning = false;
   state.endTime = null;
   releaseWakeLock();
+  syncAmbient();
 
-  if (wasWork) {
-    /* Count the minutes actually spent, not sessions x current setting. */
-    state.stats.focusMs += elapsedMs;
-    if (!wasSkipped) state.stats.completed += 1;
+  if (wasWork && elapsedMs >= MIN_RECORDED_MS) {
+    recordSession(elapsedMs, !wasSkipped);
   }
 
   if (wasWork) {
@@ -395,12 +682,16 @@ function completeSession(wasSkipped) {
     state.cycle += 1;
   }
 
+  state.startedAt = null;
+  state.distractions = 0;
   state.remainingMs = durationFor(state.mode);
   persist();
+  scheduleInsights();
 
   if (wasSkipped) {
     cancelScheduledAlarm();
     render();
+    renderTasks();
     showToast(MODES[finished].label + ' skipped');
     return;
   }
@@ -414,6 +705,184 @@ function completeSession(wasSkipped) {
 
   if (settings.autoMode) start();
   render();
+  renderTasks();
+}
+
+function logDistraction() {
+  if (!state.isRunning || state.mode !== 'work') {
+    showToast('Distractions are counted during a focus session');
+    return;
+  }
+  state.distractions += 1;
+  render();
+}
+
+/* =========================================================
+   Tasks
+   ========================================================= */
+function addTask(title, project, estimate) {
+  const task = {
+    id: makeId(),
+    title: title.trim().slice(0, 120),
+    project: project.trim().slice(0, 40),
+    estimate: clamp(estimate, 1, 24, 2),
+    done: false,
+    createdAt: Date.now()
+  };
+  if (!task.title) return;
+  tasks.unshift(task);
+  if (!state.activeTaskId) state.activeTaskId = task.id;
+  persist();
+  renderTasks();
+  render();
+}
+
+function taskProgress(taskId) {
+  let sessions = 0;
+  let minutes = 0;
+  history.forEach(function (entry) {
+    if (entry.taskId !== taskId || entry.mode !== 'work') return;
+    if (entry.completed) sessions += entry.sessionCount;
+    minutes += entry.actualMs / 60000;
+  });
+  return { sessions: sessions, minutes: minutes };
+}
+
+function setActiveTask(taskId) {
+  state.activeTaskId = state.activeTaskId === taskId ? null : taskId;
+  persist();
+  renderTasks();
+  render();
+}
+
+function toggleTaskDone(taskId) {
+  const task = tasks.find(function (entry) { return entry.id === taskId; });
+  if (!task) return;
+  task.done = !task.done;
+  if (task.done && state.activeTaskId === taskId) state.activeTaskId = null;
+  persist();
+  renderTasks();
+  render();
+}
+
+function removeTask(taskId) {
+  tasks = tasks.filter(function (entry) { return entry.id !== taskId; });
+  if (state.activeTaskId === taskId) state.activeTaskId = null;
+  persist();
+  renderTasks();
+  render();
+}
+
+function renderTasks() {
+  const list = elements.taskList;
+  list.replaceChildren();
+
+  const ordered = tasks.slice().sort(function (a, b) {
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    return b.createdAt - a.createdAt;
+  });
+
+  elements.taskEmpty.hidden = ordered.length > 0;
+
+  ordered.forEach(function (task) {
+    const progress = taskProgress(task.id);
+    const item = document.createElement('li');
+    item.className = 'task-item'
+      + (task.done ? ' is-done' : '')
+      + (task.id === state.activeTaskId ? ' is-active' : '');
+
+    const check = document.createElement('button');
+    check.type = 'button';
+    check.className = 'task-check';
+    check.setAttribute('role', 'checkbox');
+    check.setAttribute('aria-checked', String(task.done));
+    check.setAttribute('aria-label', task.done ? 'Mark as not done' : 'Mark as done');
+    check.addEventListener('click', function () { toggleTaskDone(task.id); });
+
+    const body = document.createElement('button');
+    body.type = 'button';
+    body.className = 'task-body';
+    body.setAttribute('aria-pressed', String(task.id === state.activeTaskId));
+
+    const titleLine = document.createElement('span');
+    titleLine.className = 'task-title-text';
+    titleLine.textContent = task.title;
+    body.append(titleLine);
+
+    const meta = document.createElement('span');
+    meta.className = 'task-meta';
+    if (task.project) {
+      const chip = document.createElement('span');
+      chip.className = 'project-chip';
+      const dot = document.createElement('span');
+      dot.className = 'task-dot';
+      dot.style.background = projectColor(task.project);
+      chip.append(dot, document.createTextNode(task.project));
+      meta.append(chip);
+    }
+    const count = document.createElement('span');
+    count.className = 'task-count';
+    count.textContent = progress.sessions + ' / ' + task.estimate
+      + (progress.minutes >= 1 ? ' · ' + formatMinutes(progress.minutes) : '');
+    meta.append(count);
+    body.append(meta);
+
+    body.addEventListener('click', function () { setActiveTask(task.id); });
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'task-remove';
+    remove.setAttribute('aria-label', 'Remove task');
+    remove.textContent = '×';
+    remove.addEventListener('click', function () { removeTask(task.id); });
+
+    item.append(check, body, remove);
+    list.append(item);
+  });
+
+  renderProjectOptions();
+}
+
+function renderProjectOptions() {
+  const names = new Set();
+  tasks.forEach(function (task) { if (task.project) names.add(task.project); });
+  history.forEach(function (entry) { if (entry.project) names.add(entry.project); });
+
+  const datalist = elements.projectList;
+  datalist.replaceChildren();
+  Array.from(names).sort().forEach(function (name) {
+    const option = document.createElement('option');
+    option.value = name;
+    datalist.append(option);
+  });
+}
+
+/* Colour follows the entity, never its rank: a project is handed a slot the
+   first time it is seen and keeps it for good, so re-filtering can never
+   repaint the series that survive.
+
+   A hash would be simpler but collides - three projects landing on the same
+   hue in one chart is worse than any amount of bookkeeping. The least-used
+   slot wins, so the first six projects are always distinct. */
+function projectSlot(name) {
+  const key = String(name).trim().toLowerCase();
+  if (!key) return 1;
+  if (projectSlots[key]) return projectSlots[key];
+
+  const usage = new Array(SERIES_SLOTS + 1).fill(0);
+  Object.keys(projectSlots).forEach(function (existing) { usage[projectSlots[existing]] += 1; });
+  let best = 1;
+  for (let slot = 2; slot <= SERIES_SLOTS; slot += 1) {
+    if (usage[slot] < usage[best]) best = slot;
+  }
+
+  projectSlots[key] = best;
+  schedulePersist();
+  return best;
+}
+
+function projectColor(name) {
+  return 'var(--viz-s' + projectSlot(name) + ')';
 }
 
 /* =========================================================
@@ -486,7 +955,7 @@ function startTabFlash(message) {
 }
 
 function paintTabFlash() {
-  document.title = alertState.flashOn ? '\u23F0 ' + alertState.flashTitle : 'Focusline';
+  document.title = alertState.flashOn ? '⏰ ' + alertState.flashTitle : 'Focusline';
   if (elements.favicon) elements.favicon.href = alertState.flashOn ? FAVICONS.alert : FAVICONS.idle;
 }
 
@@ -516,7 +985,7 @@ function getAudioContext() {
 
 /* Browsers only allow audio after a gesture, so open the context on any click. */
 function unlockAudio() {
-  if (settings.soundOn) getAudioContext();
+  if (settings.soundOn || settings.ambientSound !== 'none') getAudioContext();
 }
 
 function playAlarm(startAt) {
@@ -568,6 +1037,154 @@ function cancelScheduledAlarm() {
   });
   scheduledNodes = [];
   alarmPrescheduled = false;
+}
+
+/* ---------------------------------------------------------
+   Ambient soundscapes - synthesised noise, nothing to download
+   --------------------------------------------------------- */
+function makeNoiseBuffer(context, colour) {
+  const seconds = 6;
+  const length = context.sampleRate * seconds;
+  const buffer = context.createBuffer(1, length, context.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  if (colour === 'brown') {
+    let last = 0;
+    for (let index = 0; index < length; index += 1) {
+      const white = Math.random() * 2 - 1;
+      last = (last + 0.02 * white) / 1.02;
+      data[index] = last * 3.5;
+    }
+  } else if (colour === 'pink') {
+    /* Paul Kellet's economical pink-noise filter. */
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    for (let index = 0; index < length; index += 1) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.96900 * b2 + white * 0.1538520;
+      b3 = 0.86650 * b3 + white * 0.3104856;
+      b4 = 0.55000 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.0168980;
+      data[index] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+      b6 = white * 0.115926;
+    }
+  } else {
+    for (let index = 0; index < length; index += 1) data[index] = Math.random() * 2 - 1;
+  }
+
+  /* Cross-fade the seam so the loop has no audible click. */
+  const fade = Math.floor(context.sampleRate * 0.05);
+  for (let index = 0; index < fade; index += 1) {
+    const ratio = index / fade;
+    data[index] = data[index] * ratio + data[length - fade + index] * (1 - ratio);
+  }
+  return buffer;
+}
+
+function startAmbient() {
+  const preset = AMBIENCES[settings.ambientSound];
+  if (!preset) return;
+  const context = getAudioContext();
+  if (!context || settings.ambientVolume <= 0) return;
+
+  stopAmbient(0);
+
+  const source = context.createBufferSource();
+  source.buffer = makeNoiseBuffer(context, preset.noise);
+  source.loop = true;
+
+  const filter = context.createBiquadFilter();
+  filter.type = preset.filter.type;
+  filter.frequency.value = preset.filter.frequency;
+  filter.Q.value = preset.filter.Q;
+
+  const gain = context.createGain();
+  const target = settings.ambientVolume * preset.gain;
+  gain.gain.setValueAtTime(0.0001, context.currentTime);
+  gain.gain.linearRampToValueAtTime(target, context.currentTime + 1.5);
+
+  source.connect(filter).connect(gain).connect(context.destination);
+
+  /* A slow swell keeps a flat noise bed from feeling mechanical. */
+  if (preset.swell) {
+    const lfo = context.createOscillator();
+    const lfoGain = context.createGain();
+    lfo.frequency.value = preset.swell;
+    lfoGain.gain.value = target * 0.45;
+    lfo.connect(lfoGain).connect(gain.gain);
+    lfo.start();
+    ambient.lfo = lfo;
+    ambient.lfoGain = lfoGain;
+  }
+  if (preset.shimmer) {
+    const lfo = context.createOscillator();
+    const lfoGain = context.createGain();
+    lfo.frequency.value = preset.shimmer;
+    lfoGain.gain.value = preset.filter.frequency * 0.3;
+    lfo.connect(lfoGain).connect(filter.frequency);
+    lfo.start();
+    ambient.lfo = lfo;
+    ambient.lfoGain = lfoGain;
+  }
+
+  source.start();
+  ambient.source = source;
+  ambient.gain = gain;
+  ambient.filter = filter;
+}
+
+function stopAmbient(fadeSeconds) {
+  const fade = fadeSeconds === undefined ? 0.8 : fadeSeconds;
+  const source = ambient.source;
+  const gain = ambient.gain;
+  const lfo = ambient.lfo;
+  ambient.source = null;
+  ambient.gain = null;
+  ambient.filter = null;
+  ambient.lfo = null;
+  ambient.lfoGain = null;
+  if (!source) return;
+
+  const context = audioContext;
+  const stopAt = context ? context.currentTime + fade : 0;
+  if (gain && context && fade > 0) {
+    try {
+      gain.gain.cancelScheduledValues(context.currentTime);
+      gain.gain.setValueAtTime(Math.max(0.0001, gain.gain.value), context.currentTime);
+      gain.gain.linearRampToValueAtTime(0.0001, stopAt);
+    } catch (error) { /* the ramp is a nicety, not a requirement */ }
+  }
+  try { source.stop(stopAt); } catch (error) { /* already stopped */ }
+  if (lfo) { try { lfo.stop(stopAt); } catch (error) { /* already stopped */ } }
+}
+
+/* Ambience belongs to focus: it starts with a focus session and stops
+   the moment a break begins. */
+function syncAmbient() {
+  const shouldPlay = state.isRunning && state.mode === 'work' && settings.ambientSound !== 'none';
+  if (shouldPlay && !ambient.source) startAmbient();
+  else if (!shouldPlay && ambient.source) stopAmbient();
+}
+
+function previewAmbient() {
+  if (settings.ambientSound === 'none') {
+    showToast('Pick a soundscape first');
+    return;
+  }
+  unlockAudio();
+  window.clearTimeout(ambient.previewTimer);
+  if (ambient.source && !state.isRunning) {
+    stopAmbient();
+    elements.ambientPreview.textContent = 'Play preview';
+    return;
+  }
+  startAmbient();
+  elements.ambientPreview.textContent = 'Stop preview';
+  ambient.previewTimer = window.setTimeout(function () {
+    if (!state.isRunning) stopAmbient();
+    elements.ambientPreview.textContent = 'Play preview';
+  }, 12000);
 }
 
 /* =========================================================
@@ -715,15 +1332,15 @@ function render() {
   elements.progressRing.style.strokeDashoffset = String(circumference * (1 - progress));
 
   setText('startLabel', elements.startLabel, state.isRunning ? 'Pause' : startVerb());
-  setText('startIcon', elements.startIcon, state.isRunning ? '\u2759\u2759' : '\u25B6');
+  setText('startIcon', elements.startIcon, state.isRunning ? '❙❙' : '▶');
   elements.startButton.setAttribute('aria-pressed', String(state.isRunning));
 
   setText('headerStatus', elements.headerStatusText, headerStatus());
-  setText('sessionState', elements.sessionState, state.isRunning ? 'Active' : 'Ready');
-  setText('completed', elements.completedSessions, String(state.stats.completed));
-  setText('focus', elements.focusMinutes, String(Math.round(state.stats.focusMs / 60000)));
   setText('nextUp', elements.nextUp, 'Next: ' + nextSessionLabel());
 
+  renderActiveTask();
+  renderDistractions();
+  renderToday();
   renderTrack();
   renderTitle(clock, mode.label);
 }
@@ -747,6 +1364,50 @@ function nextSessionLabel() {
     : 'a break of ' + plural(settings.breakMinutes);
 }
 
+function renderActiveTask() {
+  const task = activeTask();
+  setText('activeTask', elements.activeTaskName, task ? task.title : 'Nothing selected');
+  elements.activeTaskButton.classList.toggle('is-empty', !task);
+  elements.activeTaskDot.style.background = task && task.project
+    ? projectColor(task.project)
+    : 'var(--muted)';
+}
+
+function renderDistractions() {
+  const live = state.isRunning && state.mode === 'work';
+  elements.distractionRow.classList.toggle('is-live', live);
+  elements.distractionButton.disabled = !live;
+
+  const count = state.distractions;
+  setText('distractionCount', elements.distractionCount,
+    count === 0
+      ? (live ? 'Clean run so far' : 'Logged during focus')
+      : count + (count === 1 ? ' distraction' : ' distractions') + ' this session');
+}
+
+function renderToday() {
+  const today = todaySummary();
+  const goal = settings.dailyGoalMinutes;
+  const ratio = goal > 0 ? Math.min(1, today.minutes / goal) : 0;
+
+  setText('todayFocus', elements.todayFocus, formatMinutes(today.minutes));
+  setText('goalTarget', elements.goalTarget, 'of a ' + formatMinutes(goal) + ' goal');
+  elements.goalFill.style.width = (ratio * 100).toFixed(1) + '%';
+  elements.goalMeter.setAttribute('aria-label',
+    'Daily focus goal: ' + formatMinutes(today.minutes) + ' of ' + formatMinutes(goal));
+  elements.goalMeter.classList.toggle('is-complete', ratio >= 1);
+
+  const remaining = Math.max(0, goal - today.minutes);
+  setText('goalCaption', elements.goalCaption,
+    today.minutes === 0 ? 'Start a session to get going.'
+      : remaining === 0 ? 'Goal reached. Anything further is a bonus.'
+        : formatMinutes(remaining) + ' left to reach today’s goal.');
+
+  setText('completed', elements.completedSessions, String(today.completed));
+  setText('streak', elements.streakValue, String(computeStreak()));
+  setText('todayDistractions', elements.todayDistractions, String(today.distractions + (state.mode === 'work' ? state.distractions : 0)));
+}
+
 function renderTrack() {
   const total = settings.roundsBeforeLongBreak;
   const done = Math.min(state.round, total);
@@ -766,7 +1427,7 @@ function renderTrack() {
 
 function renderTitle(clock, label) {
   if (alertState.flashTimer) return; // the flashing alert owns the title
-  const title = state.isRunning ? clock + ' \u00B7 ' + label : 'Focusline | Pomodoro Timer';
+  const title = state.isRunning ? clock + ' · ' + label : 'Focusline | Deep Work Timer';
   if (rendered.title === title) return;
   rendered.title = title;
   document.title = title;
@@ -784,10 +1445,14 @@ function syncControls() {
   elements.alarmSound.value = settings.alarmSound;
   elements.volumeRange.value = Math.round(settings.volume * 100);
   elements.volumeValue.textContent = Math.round(settings.volume * 100) + '%';
+  elements.ambientSound.value = settings.ambientSound;
+  elements.ambientVolume.value = Math.round(settings.ambientVolume * 100);
+  elements.ambientVolumeValue.textContent = Math.round(settings.ambientVolume * 100) + '%';
 }
 
 function syncToggles() {
   setToggle(elements.autoToggle, elements.autoLabel, settings.autoMode);
+  setToggle(elements.strictToggle, elements.strictLabel, settings.strictMode);
   setToggle(elements.soundToggle, elements.soundLabel, settings.soundOn);
   setToggle(elements.repeatToggle, elements.repeatLabel, settings.repeatAlarm);
   setToggle(elements.flashToggle, elements.flashLabel, settings.flashTab);
@@ -826,15 +1491,34 @@ function applySetting(key, value, syncNumberField) {
 
   schedulePersist();
   render();
+  if (key === 'goal') scheduleInsights();
 }
 
-function clearStats() {
-  state.stats = { date: todayKey(), completed: 0, focusMs: 0 };
+function applyPreset(name) {
+  const preset = PRESETS[name];
+  if (!preset) return;
+  Object.keys(preset).forEach(function (field) { settings[field] = preset[field]; });
+  state.round = Math.min(state.round, settings.roundsBeforeLongBreak);
+  if (!state.isRunning) state.remainingMs = durationFor(state.mode);
+  syncControls();
+  schedulePersist();
+  render();
+  showToast(preset.workMinutes + ' / ' + preset.breakMinutes + ' rhythm applied');
+}
+
+function clearToday() {
+  const key = todayKey();
+  const before = history.length;
+  history = history.filter(function (entry) { return dayKey(new Date(entry.startedAt)) !== key; });
+  invalidateDays();
   state.round = 0;
   state.cycle = 1;
+  state.distractions = 0;
   persist();
   render();
-  showToast('Today\u2019s record cleared');
+  renderTasks();
+  scheduleInsights();
+  showToast(before === history.length ? 'Nothing recorded today yet' : 'Today’s record cleared');
 }
 
 /* =========================================================
@@ -851,6 +1535,33 @@ function applyTheme(preference) {
 function cycleTheme() {
   const order = ['auto', 'light', 'dark'];
   applyTheme(order[(order.indexOf(themePreference) + 1) % order.length]);
+}
+
+/* =========================================================
+   Views
+   ========================================================= */
+function applyRoute(hash) {
+  showView(hash === '#insights' ? 'insights' : 'timer');
+}
+
+function showView(view) {
+  currentView = view;
+  const insights = view === 'insights';
+  elements.viewTimer.hidden = insights;
+  elements.viewInsights.hidden = !insights;
+
+  elements.tabTimer.classList.toggle('is-active', !insights);
+  elements.tabInsights.classList.toggle('is-active', insights);
+  if (insights) {
+    elements.tabInsights.setAttribute('aria-current', 'page');
+    elements.tabTimer.removeAttribute('aria-current');
+  } else {
+    elements.tabTimer.setAttribute('aria-current', 'page');
+    elements.tabInsights.removeAttribute('aria-current');
+  }
+
+  Viz.hideTip();
+  if (insights) renderInsights();
 }
 
 /* =========================================================
@@ -891,16 +1602,608 @@ function showToast(message) {
 }
 
 /* =========================================================
+   Insights
+   ========================================================= */
+function buildCharts() {
+  charts.trend = new Viz.Chart(elements.chartTrend, {
+    title: 'Focus over time',
+    subtitle: 'Minutes of deep work per day, against a 7-day average'
+  });
+  charts.calendar = new Viz.Chart(elements.chartCalendar, {
+    title: 'Consistency',
+    subtitle: 'Every day in range, shaded against your daily goal'
+  });
+  charts.hours = new Viz.Chart(elements.chartHours, {
+    title: 'When you focus best',
+    subtitle: 'Focus minutes by hour of the day'
+  });
+  charts.weekdays = new Viz.Chart(elements.chartWeekdays, {
+    title: 'Weekly rhythm',
+    subtitle: 'Average focus per day of the week'
+  });
+  charts.projects = new Viz.Chart(elements.chartProjects, {
+    title: 'Where the focus went',
+    subtitle: 'Share of deep work by project'
+  });
+  charts.quality = new Viz.Chart(elements.chartFocusQuality, {
+    title: 'Interruptions',
+    subtitle: 'Logged distractions per hour of focus, by week'
+  });
+}
+
+function scheduleInsights() {
+  if (currentView !== 'insights') return;
+  window.clearTimeout(insightsTimeout);
+  insightsTimeout = window.setTimeout(renderInsights, 120);
+}
+
+function rangeBounds() {
+  const end = startOfDay(new Date());
+  if (insightsRange === 'all') {
+    const first = history.length ? startOfDay(new Date(history[0].startedAt)) : end;
+    const span = Math.round((end - first) / 86400000) + 1;
+    return { start: first, end: end, days: Math.max(30, Math.min(span, 371)) };
+  }
+  return { start: addDays(end, -(insightsRange - 1)), end: end, days: insightsRange };
+}
+
+function sessionsBetween(startDate, endDate) {
+  const from = startDate.getTime();
+  const to = addDays(endDate, 1).getTime();
+  return history.filter(function (entry) {
+    return entry.mode === 'work' && entry.startedAt >= from && entry.startedAt < to;
+  });
+}
+
+function totals(sessions) {
+  let minutes = 0;
+  let count = 0;
+  let completed = 0;
+  let distractions = 0;
+  sessions.forEach(function (entry) {
+    minutes += entry.actualMs / 60000;
+    count += entry.sessionCount;
+    if (entry.completed) completed += entry.sessionCount;
+    distractions += entry.distractions;
+  });
+  return { minutes: minutes, count: count, completed: completed, distractions: distractions };
+}
+
+function renderInsights() {
+  const bounds = rangeBounds();
+  const start = insightsRange === 'all' ? addDays(bounds.end, -(bounds.days - 1)) : bounds.start;
+  const sessions = sessionsBetween(start, bounds.end);
+  const days = summariseDays(sessions);
+
+  renderSummary(sessions, start, bounds);
+  renderTrendChart(days, start, bounds);
+  renderCalendarChart(days, start, bounds);
+  renderHoursChart(sessions);
+  renderWeekdayChart(days, start, bounds);
+  renderProjectsChart(sessions);
+  renderQualityChart(sessions, start, bounds);
+
+  const oldest = history.length ? new Date(history[0].startedAt) : null;
+  elements.dataSummary.textContent = history.length
+    ? history.length + ' sessions recorded since '
+      + oldest.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+      + ' · everything stays on this device.'
+    : 'Nothing recorded yet · everything stays on this device.';
+}
+
+function renderSummary(sessions, start, bounds) {
+  const current = totals(sessions);
+  const previousStart = addDays(start, -bounds.days);
+  const previous = totals(sessionsBetween(previousStart, addDays(start, -1)));
+
+  elements.heroValue.textContent = formatMinutes(current.minutes);
+  setDelta(elements.heroDelta, current.minutes, previous.minutes, formatMinutes, 'vs previous ' + bounds.days + ' days');
+
+  elements.kpiSessions.textContent = String(current.completed);
+  setDelta(elements.kpiSessionsDelta, current.completed, previous.completed,
+    function (value) { return String(Math.round(value)); }, 'vs previous period');
+
+  const average = current.completed > 0 ? current.minutes / current.completed : 0;
+  const previousAverage = previous.completed > 0 ? previous.minutes / previous.completed : 0;
+  elements.kpiAverage.textContent = average > 0 ? formatMinutes(average) : '–';
+  setDelta(elements.kpiAverageDelta, average, previousAverage, formatMinutes, 'vs previous period');
+
+  const daily = current.minutes / bounds.days;
+  elements.kpiDaily.textContent = formatMinutes(daily);
+  const dayIndex = summariseDays(sessions);
+  const sparkValues = [];
+  for (let index = 0; index < bounds.days; index += 1) {
+    const day = dayIndex.get(dayKey(addDays(start, index)));
+    sparkValues.push(day ? day.minutes : 0);
+  }
+  const hasSpark = sparkValues.some(function (value) { return value > 0; });
+  Viz.sparkline(elements.kpiDailySpark, hasSpark ? sparkValues.slice(-24) : null);
+
+  const streak = computeStreak();
+  elements.kpiStreak.textContent = String(streak);
+  elements.kpiStreakDetail.textContent = streak === 0
+    ? 'Finish a session to start one'
+    : streak === 1 ? 'day in a row' : 'days in a row';
+
+  const attempted = current.count;
+  elements.kpiCompletion.textContent = attempted > 0
+    ? Math.round((current.completed / attempted) * 100) + '%'
+    : '–';
+  elements.kpiCompletionDetail.textContent = attempted > 0
+    ? current.completed + ' of ' + attempted + ' ran to the end'
+    : 'No sessions yet';
+
+  const focusHours = current.minutes / 60;
+  const rate = focusHours >= 0.5 ? current.distractions / focusHours : null;
+  elements.kpiDistraction.textContent = rate === null ? '–' : (Math.round(rate * 10) / 10).toFixed(1);
+  elements.kpiDistractionDetail.textContent = rate === null
+    ? 'Log a few to see the rate'
+    : current.distractions + ' logged in ' + formatMinutes(current.minutes);
+}
+
+/* Direction, and whether up is good, decide the colour. */
+function setDelta(node, current, previous, format, caption) {
+  node.classList.remove('is-up', 'is-down');
+  if (!previous) {
+    node.textContent = current > 0 ? 'No comparable period' : '';
+    return;
+  }
+  const difference = current - previous;
+  const percent = Math.round((difference / previous) * 100);
+  if (Math.abs(percent) < 1) {
+    node.textContent = 'Level ' + caption;
+    return;
+  }
+  node.classList.add(difference > 0 ? 'is-up' : 'is-down');
+  node.textContent = (difference > 0 ? '↑ ' : '↓ ') + Math.abs(percent) + '% ' + caption;
+}
+
+/* Daily buckets stay readable to about four months; past that the chart
+   switches to weeks rather than drawing 300 hairline columns. */
+function bucketPlan(days) {
+  return days > 120 ? { size: 7, window: 4, label: 'week' } : { size: 1, window: 7, label: 'day' };
+}
+
+function renderTrendChart(days, start, bounds) {
+  const plan = bucketPlan(bounds.days);
+  const buckets = [];
+
+  for (let offset = 0; offset < bounds.days; offset += plan.size) {
+    const from = addDays(start, offset);
+    let minutes = 0;
+    let sessions = 0;
+    for (let step = 0; step < plan.size && offset + step < bounds.days; step += 1) {
+      const day = days.get(dayKey(addDays(from, step)));
+      if (day) {
+        minutes += day.minutes;
+        sessions += day.sessions;
+      }
+    }
+    buckets.push({
+      date: from,
+      value: minutes,
+      sessions: sessions,
+      label: plan.size === 1
+        ? from.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+        : 'Week of ' + from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      short: plan.size === 1
+        ? from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+        : from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    });
+  }
+
+  /* Trailing average over a full window, so the line never starts on a
+     partial one. */
+  buckets.forEach(function (bucket, index) {
+    if (index < plan.window - 1) {
+      bucket.trend = null;
+      return;
+    }
+    let sum = 0;
+    for (let step = 0; step < plan.window; step += 1) sum += buckets[index - step].value;
+    bucket.trend = sum / plan.window;
+  });
+
+  charts.trend.options.subtitle = plan.size === 1
+    ? 'Minutes of deep work per day, against a 7-day average'
+    : 'Minutes of deep work per week, against a 4-week average';
+  charts.trend.container.querySelector('.chart-sub').textContent = charts.trend.options.subtitle;
+
+  charts.trend.update({
+    type: 'trend',
+    points: buckets,
+    goal: settings.dailyGoalMinutes * plan.size,
+    height: 190,
+    ariaLabel: 'Focus minutes per ' + plan.label + ' with a trailing average',
+    emptyMessage: 'No focus sessions in this range yet.'
+  });
+}
+
+function renderCalendarChart(days, start, bounds) {
+  /* Whole weeks, Monday-first, so the grid reads as a calendar. */
+  const first = startOfDay(start);
+  const weekdayOffset = (first.getDay() + 6) % 7;
+  const gridStart = addDays(first, -weekdayOffset);
+  const totalDays = Math.ceil((bounds.days + weekdayOffset) / 7) * 7;
+  const goal = settings.dailyGoalMinutes;
+  const endTime = bounds.end.getTime();
+  const cells = [];
+
+  for (let index = 0; index < totalDays; index += 1) {
+    const date = addDays(gridStart, index);
+    if (date.getTime() > endTime) break;
+
+    /* Days before the range exist only to square off the first week; drawn
+       as cells they would read as "no focus", which is a different claim. */
+    if (date.getTime() < first.getTime()) {
+      cells.push({ date: date, outside: true, level: 0, minutes: 0, sessions: 0,
+        monthShort: date.toLocaleDateString(undefined, { month: 'short' }), label: '' });
+      continue;
+    }
+
+    const day = days.get(dayKey(date));
+    const minutes = day ? day.minutes : 0;
+    const ratio = goal > 0 ? minutes / goal : 0;
+    let level = 0;
+    if (minutes > 0) level = ratio >= 1 ? 4 : ratio >= 0.66 ? 3 : ratio >= 0.33 ? 2 : 1;
+
+    cells.push({
+      date: date,
+      level: level,
+      minutes: minutes,
+      sessions: day ? day.sessions : 0,
+      monthShort: date.toLocaleDateString(undefined, { month: 'short' }),
+      label: date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+    });
+  }
+
+  /* The renderer reads column-major (7 rows per week). */
+  const ordered = [];
+  const weeks = Math.ceil(cells.length / 7);
+  for (let week = 0; week < weeks; week += 1) {
+    for (let row = 0; row < 7; row += 1) {
+      const cell = cells[week * 7 + row];
+      if (cell) ordered.push(cell);
+    }
+  }
+
+  charts.calendar.update({
+    type: 'calendar',
+    days: ordered,
+    ariaLabel: 'Daily focus calendar shaded against the daily goal',
+    emptyMessage: 'No history yet.',
+    note: 'Shading is a share of your ' + formatMinutes(goal) + ' daily goal.'
+  });
+}
+
+function renderHoursChart(sessions) {
+  const hours = new Array(24).fill(0);
+
+  /* A 90-minute session spans several hours: split it across them rather
+     than crediting the whole block to the hour it started in. */
+  sessions.forEach(function (entry) {
+    let cursor = entry.startedAt;
+    const finish = cursor + entry.actualMs;
+    while (cursor < finish) {
+      const slot = new Date(cursor);
+      const nextHour = new Date(slot);
+      nextHour.setMinutes(60, 0, 0);
+      const chunkEnd = Math.min(finish, nextHour.getTime());
+      hours[slot.getHours()] += (chunkEnd - cursor) / 60000;
+      cursor = chunkEnd;
+    }
+  });
+
+  charts.hours.update({
+    type: 'columns',
+    bars: hours.map(function (minutes, hour) {
+      return {
+        value: minutes,
+        label: formatClock(hour) + ' – ' + formatClock((hour + 1) % 24),
+        short: formatClock(hour)
+      };
+    }),
+    labelStride: 3,
+    height: 140,
+    ariaLabel: 'Focus minutes by hour of the day',
+    emptyMessage: 'Finish a few sessions to find your best hours.',
+    note: 'Your peak hour is the one worth defending.'
+  });
+}
+
+function renderWeekdayChart(days, start, bounds) {
+  const names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const totalsByDay = new Array(7).fill(0);
+  const counts = new Array(7).fill(0);
+
+  for (let index = 0; index < bounds.days; index += 1) {
+    const date = addDays(start, index);
+    const slot = (date.getDay() + 6) % 7;
+    const day = days.get(dayKey(date));
+    totalsByDay[slot] += day ? day.minutes : 0;
+    counts[slot] += 1;
+  }
+
+  charts.weekdays.update({
+    type: 'columns',
+    bars: names.map(function (name, index) {
+      return {
+        value: counts[index] ? totalsByDay[index] / counts[index] : 0,
+        label: name,
+        short: name.slice(0, 3),
+        detail: counts[index] + (counts[index] === 1 ? ' day' : ' days'),
+        detailLabel: 'in range'
+      };
+    }),
+    height: 140,
+    categoryHeading: 'Day',
+    valueHeading: 'Average focus',
+    ariaLabel: 'Average focus minutes by day of the week',
+    emptyMessage: 'Not enough sessions yet.'
+  });
+}
+
+function renderProjectsChart(sessions) {
+  const byProject = new Map();
+  sessions.forEach(function (entry) {
+    const name = entry.project || entry.taskTitle || 'Unassigned';
+    let slice = byProject.get(name);
+    if (!slice) {
+      slice = { label: name, value: 0, sessions: 0 };
+      byProject.set(name, slice);
+    }
+    slice.value += entry.actualMs / 60000;
+    slice.sessions += entry.sessionCount;
+  });
+
+  const ordered = Array.from(byProject.values()).sort(function (a, b) { return b.value - a.value; });
+
+  /* Past five, the tail folds into "Other" - never a generated hue. */
+  const slices = ordered.slice(0, 5).map(function (slice) {
+    return Object.assign({}, slice, { color: projectColor(slice.label) });
+  });
+  const tail = ordered.slice(5);
+  if (tail.length) {
+    slices.push({
+      label: 'Other (' + tail.length + ')',
+      value: tail.reduce(function (sum, slice) { return sum + slice.value; }, 0),
+      sessions: tail.reduce(function (sum, slice) { return sum + slice.sessions; }, 0),
+      color: 'var(--viz-other)'
+    });
+  }
+
+  charts.projects.update({
+    type: 'split',
+    slices: slices,
+    ariaLabel: 'Share of focus time by project',
+    emptyMessage: 'Give your tasks a project to see the split.'
+  });
+}
+
+function renderQualityChart(sessions, start, bounds) {
+  const weeks = [];
+  const weekCount = Math.max(1, Math.ceil(bounds.days / 7));
+
+  for (let index = 0; index < weekCount; index += 1) {
+    const from = addDays(start, index * 7);
+    const to = addDays(from, 7);
+    let minutes = 0;
+    let distractions = 0;
+    sessions.forEach(function (entry) {
+      if (entry.startedAt < from.getTime() || entry.startedAt >= to.getTime()) return;
+      minutes += entry.actualMs / 60000;
+      distractions += entry.distractions;
+    });
+    /* Under 15 minutes a rate is noise, not a reading. */
+    weeks.push({
+      value: minutes >= 15 ? distractions / (minutes / 60) : null,
+      label: 'Week of ' + from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      short: from.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      detail: formatMinutes(minutes),
+      detailLabel: 'focused'
+    });
+  }
+
+  charts.quality.update({
+    type: 'line',
+    points: weeks,
+    height: 130,
+    valueLabel: 'per focus hour',
+    valueHeading: 'Interruptions / hour',
+    ariaLabel: 'Logged interruptions per hour of focus, by week',
+    emptyMessage: 'Log distractions during focus to track this.',
+    note: 'Lower is deeper. Weeks under 15 minutes of focus are left out.'
+  });
+}
+
+/* =========================================================
+   Import / export
+   ========================================================= */
+function download(filename, contents, type) {
+  try {
+    const blob = new Blob([contents], { type: type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    showToast('Saved ' + filename);
+  } catch (error) {
+    showToast('This browser blocked the download');
+  }
+}
+
+function exportJson() {
+  download('focusline-backup-' + todayKey() + '.json', JSON.stringify(snapshot(), null, 2), 'application/json');
+}
+
+function exportCsv() {
+  const header = ['started_at', 'ended_at', 'minutes', 'planned_minutes', 'completed', 'task', 'project', 'distractions'];
+  const rows = history.filter(function (entry) { return entry.mode === 'work'; }).map(function (entry) {
+    return [
+      new Date(entry.startedAt).toISOString(),
+      new Date(entry.endedAt).toISOString(),
+      (entry.actualMs / 60000).toFixed(2),
+      (entry.plannedMs / 60000).toFixed(2),
+      entry.completed ? 'yes' : 'skipped',
+      csvCell(entry.taskTitle),
+      csvCell(entry.project),
+      String(entry.distractions)
+    ].join(',');
+  });
+  download('focusline-sessions-' + todayKey() + '.csv', [header.join(',')].concat(rows).join('\r\n'), 'text/csv');
+}
+
+function csvCell(value) {
+  const text = String(value || '');
+  return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+}
+
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = function () {
+    let parsed = null;
+    try {
+      parsed = JSON.parse(String(reader.result));
+    } catch (error) {
+      showToast('That file is not a Focusline backup');
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      showToast('That file is not a Focusline backup');
+      return;
+    }
+
+    const incoming = sanitiseHistory(parsed.history);
+    const incomingTasks = sanitiseTasks(parsed.tasks);
+    if (!incoming.length && !incomingTasks.length && !parsed.settings) {
+      showToast('Nothing to import from that file');
+      return;
+    }
+    if (!window.confirm('Merge ' + incoming.length + ' sessions and ' + incomingTasks.length
+      + ' tasks into this device? Existing records are kept.')) return;
+
+    /* Merge, not replace: a re-imported backup must not duplicate rows. */
+    const seen = new Set(history.map(function (entry) { return entry.id; }));
+    incoming.forEach(function (entry) {
+      if (seen.has(entry.id)) return;
+      seen.add(entry.id);
+      history.push(entry);
+    });
+    history.sort(function (a, b) { return a.startedAt - b.startedAt; });
+    history = history.slice(-HISTORY_LIMIT);
+    invalidateDays();
+
+    const taskIds = new Set(tasks.map(function (task) { return task.id; }));
+    incomingTasks.forEach(function (task) {
+      if (taskIds.has(task.id)) return;
+      taskIds.add(task.id);
+      tasks.push(task);
+    });
+
+    if (parsed.settings) {
+      applySavedSettings(parsed.settings);
+      syncControls();
+      syncToggles();
+    }
+
+    persist();
+    render();
+    renderTasks();
+    scheduleInsights();
+    showToast('Imported ' + incoming.length + ' sessions');
+  };
+  reader.onerror = function () { showToast('That file could not be read'); };
+  reader.readAsText(file);
+}
+
+function wipeEverything() {
+  if (!window.confirm('Erase every session, task and setting on this device? This cannot be undone.')) return;
+  if (!window.confirm('Really erase everything? Export a backup first if you want to keep it.')) return;
+
+  history = [];
+  tasks = [];
+  projectSlots = {};
+  invalidateDays();
+  state.activeTaskId = null;
+  state.round = 0;
+  state.cycle = 1;
+  state.distractions = 0;
+  Object.keys(DEFAULT_SETTINGS).forEach(function (key) { settings[key] = DEFAULT_SETTINGS[key]; });
+  if (!state.isRunning) state.remainingMs = durationFor(state.mode);
+
+  syncControls();
+  syncToggles();
+  persist();
+  render();
+  renderTasks();
+  scheduleInsights();
+  showToast('Everything erased');
+}
+
+/* =========================================================
    Events
    ========================================================= */
 function attachEvents() {
   elements.startButton.addEventListener('click', function () { clearAlert(); start(); });
   elements.resetButton.addEventListener('click', function () { clearAlert(); reset(); });
   elements.skipButton.addEventListener('click', function () { clearAlert(); skip(); });
+  elements.distractionButton.addEventListener('click', logDistraction);
   elements.alertDismiss.addEventListener('click', clearAlert);
   elements.fullscreenButton.addEventListener('click', toggleFullscreen);
   elements.themeToggle.addEventListener('click', cycleTheme);
-  elements.resetStats.addEventListener('click', clearStats);
+  elements.resetStats.addEventListener('click', clearToday);
+
+  elements.activeTaskButton.addEventListener('click', function () {
+    if (currentView !== 'timer') showView('timer');
+    elements.taskTitle.focus();
+  });
+
+  elements.tabTimer.addEventListener('click', function () { location.hash = '#timer'; showView('timer'); });
+  elements.tabInsights.addEventListener('click', function () { location.hash = '#insights'; showView('insights'); });
+  window.addEventListener('hashchange', function () { applyRoute(location.hash); });
+
+  document.querySelectorAll('.range-chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      const value = chip.dataset.range;
+      insightsRange = value === 'all' ? 'all' : Number(value);
+      document.querySelectorAll('.range-chip').forEach(function (other) {
+        const active = other === chip;
+        other.classList.toggle('is-active', active);
+        if (active) other.setAttribute('aria-pressed', 'true');
+        else other.removeAttribute('aria-pressed');
+      });
+      renderInsights();
+    });
+  });
+
+  document.querySelectorAll('.preset').forEach(function (button) {
+    button.addEventListener('click', function () { applyPreset(button.dataset.preset); });
+  });
+
+  elements.taskForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    const title = elements.taskTitle.value.trim();
+    if (!title) return;
+    addTask(title, elements.taskProject.value, elements.taskEstimate.value);
+    elements.taskTitle.value = '';
+    elements.taskTitle.focus();
+  });
+
+  elements.clearDoneTasks.addEventListener('click', function () {
+    const before = tasks.length;
+    tasks = tasks.filter(function (task) { return !task.done; });
+    if (before === tasks.length) {
+      showToast('No finished tasks to clear');
+      return;
+    }
+    persist();
+    renderTasks();
+    showToast('Finished tasks cleared');
+  });
 
   elements.testAlert.addEventListener('click', function () {
     unlockAudio();
@@ -912,6 +2215,13 @@ function attachEvents() {
     syncToggles();
     schedulePersist();
     showToast(settings.autoMode ? 'Sessions continue automatically' : 'Each session waits for you');
+  });
+
+  elements.strictToggle.addEventListener('click', function () {
+    settings.strictMode = !settings.strictMode;
+    syncToggles();
+    schedulePersist();
+    showToast(settings.strictMode ? 'Strict focus on: leaving a session asks first' : 'Strict focus off');
   });
 
   elements.soundToggle.addEventListener('click', function () {
@@ -961,6 +2271,30 @@ function attachEvents() {
     playAlarm();
   });
 
+  elements.ambientSound.addEventListener('change', function () {
+    settings.ambientSound = AMBIENCES[elements.ambientSound.value] ? elements.ambientSound.value : 'none';
+    schedulePersist();
+    if (ambient.source) stopAmbient(0.2);
+    elements.ambientPreview.textContent = 'Play preview';
+    syncAmbient();
+  });
+
+  elements.ambientVolume.addEventListener('input', function () {
+    settings.ambientVolume = clamp(elements.ambientVolume.value, 0, 100, 35) / 100;
+    elements.ambientVolumeValue.textContent = Math.round(settings.ambientVolume * 100) + '%';
+    schedulePersist();
+
+    /* Follow the slider live instead of restarting the noise bed. */
+    const preset = AMBIENCES[settings.ambientSound];
+    if (ambient.gain && preset && audioContext) {
+      ambient.gain.gain.setTargetAtTime(
+        settings.ambientVolume * preset.gain, audioContext.currentTime, 0.1
+      );
+    }
+  });
+
+  elements.ambientPreview.addEventListener('click', previewAmbient);
+
   Object.keys(CONTROLS).forEach(function (key) {
     const control = CONTROLS[key];
     const numberField = elements[control.number];
@@ -970,6 +2304,16 @@ function attachEvents() {
     numberField.addEventListener('blur', function () { handleControlInput(key, numberField.value, true); });
     rangeField.addEventListener('input', function () { handleControlInput(key, rangeField.value, true); });
   });
+
+  elements.exportJson.addEventListener('click', exportJson);
+  elements.exportCsv.addEventListener('click', exportCsv);
+  elements.importButton.addEventListener('click', function () { elements.importInput.click(); });
+  elements.importInput.addEventListener('change', function () {
+    const file = elements.importInput.files && elements.importInput.files[0];
+    if (file) importBackup(file);
+    elements.importInput.value = '';
+  });
+  elements.wipeData.addEventListener('click', wipeEverything);
 
   /* Any interaction silences a ringing alarm. */
   document.addEventListener('pointerdown', function () {
@@ -990,12 +2334,12 @@ function attachEvents() {
       persist();
       return;
     }
-    ensureToday();
     if (state.isRunning) {
       requestWakeLock();
       tick();
     }
     render();
+    scheduleInsights();
   });
 
   window.addEventListener('beforeunload', persist);
@@ -1016,6 +2360,16 @@ function onKeydown(event) {
     return;
   }
 
+  if (event.code === 'KeyI') {
+    const next = currentView === 'insights' ? 'timer' : 'insights';
+    location.hash = '#' + next;
+    showView(next);
+    return;
+  }
+
+  /* The rest drive the timer, so they only apply where the timer is. */
+  if (currentView !== 'timer') return;
+
   switch (event.code) {
     case 'Space':
       if (tag === 'BUTTON') return; // let the focused button handle its own key
@@ -1027,6 +2381,9 @@ function onKeydown(event) {
       break;
     case 'KeyS':
       skip();
+      break;
+    case 'KeyD':
+      logDistraction();
       break;
     case 'KeyF':
       toggleFullscreen();

@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="description" content="Focusline is a calm pomodoro timer for deep work: focus sessions, short breaks, long breaks and a record of your day.">
+  <meta name="description" content="Focusline is a calm pomodoro timer built for deep work: focus sessions, task tracking, interruption logging, ambient sound and a record of how your attention evolves.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f5f0e8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#121a18" media="(prefers-color-scheme: dark)">
-  <title>Focusline | Pomodoro Timer</title>
+  <title>Focusline | Deep Work Timer</title>
 
   <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='12' fill='none' stroke='%232f6b5b' stroke-width='3'/%3E%3Cpath d='M16 9v7h5' fill='none' stroke='%232f6b5b' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -46,10 +46,15 @@
   </div>
 
   <header class="topbar">
-    <a class="brand" href="./" aria-label="Focusline home">
+    <a class="brand" href="#timer" aria-label="Focusline home">
       <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
       <span>focusline</span>
     </a>
+
+    <nav class="view-nav" aria-label="Views">
+      <button class="view-tab is-active" id="tabTimer" type="button" data-view="timer" aria-current="page">Timer</button>
+      <button class="view-tab" id="tabInsights" type="button" data-view="insights">Insights</button>
+    </nav>
 
     <div class="topbar-tools">
       <p class="topbar-meta" id="headerStatus" aria-live="polite">
@@ -61,11 +66,14 @@
     </div>
   </header>
 
-  <main class="app-shell">
+  <!-- =====================================================
+       Timer view
+       ===================================================== -->
+  <main class="app-shell" id="viewTimer">
     <section class="hero-copy" aria-labelledby="pageTitle">
       <p class="eyebrow">A quieter way to get things done</p>
       <h1 id="pageTitle">Make space for<br><em>deep work.</em></h1>
-      <p class="intro">One focused session at a time. Set your rhythm, settle in, and let the clock take care of the rest.</p>
+      <p class="intro">One focused session at a time. Name the work, guard the hour, and let the clock take care of the rest.</p>
     </section>
 
     <section class="timer-panel" id="timerPanel" aria-label="Pomodoro timer" tabindex="-1">
@@ -76,6 +84,14 @@
           <button class="fullscreen-button" id="fullscreenButton" type="button" aria-label="Enter full screen">Full screen</button>
         </div>
       </div>
+
+      <p class="now-working" id="nowWorking">
+        <span class="now-working-label">Working on</span>
+        <button class="now-working-task" id="activeTaskButton" type="button">
+          <span class="task-dot" id="activeTaskDot" aria-hidden="true"></span>
+          <span id="activeTaskName">Nothing selected</span>
+        </button>
+      </p>
 
       <div class="timer-display-wrap">
         <div class="timer-ring" id="timerRing">
@@ -98,35 +114,80 @@
         <button class="button button-quiet" id="skipButton" type="button">Skip session</button>
       </div>
 
+      <div class="distraction-row" id="distractionRow">
+        <button class="distraction-button" id="distractionButton" type="button">
+          <span aria-hidden="true">&#9889;</span> Log a distraction
+        </button>
+        <p class="distraction-count" id="distractionCount">None this session</p>
+      </div>
+
       <p class="next-up" id="nextUp">Next: a break of 5 minutes</p>
       <p class="keyboard-hint">
-        <kbd>Space</kbd> start or pause<span class="hint-sep" aria-hidden="true">&middot;</span>
+        <kbd>Space</kbd> start<span class="hint-sep" aria-hidden="true">&middot;</span>
         <kbd>R</kbd> reset<span class="hint-sep" aria-hidden="true">&middot;</span>
         <kbd>S</kbd> skip<span class="hint-sep" aria-hidden="true">&middot;</span>
+        <kbd>D</kbd> distraction<span class="hint-sep" aria-hidden="true">&middot;</span>
         <kbd>F</kbd> full screen
       </p>
     </section>
 
-    <aside class="stats-panel" aria-label="Session progress">
-      <div class="panel-heading">
-        <span>Today&rsquo;s rhythm</span>
-        <span class="panel-rule" aria-hidden="true"></span>
-        <button class="ghost-button" id="resetStats" type="button">Clear</button>
-      </div>
+    <aside class="side-column" aria-label="Today and tasks">
+      <!-- Today -->
+      <section class="card" aria-labelledby="todayTitle">
+        <div class="panel-heading">
+          <span id="todayTitle">Today&rsquo;s rhythm</span>
+          <span class="panel-rule" aria-hidden="true"></span>
+          <button class="ghost-button" id="resetStats" type="button">Clear</button>
+        </div>
 
-      <div class="stat-grid">
-        <p class="stat-item"><span class="stat-value" id="completedSessions">0</span><span class="stat-label">sessions completed</span></p>
-        <p class="stat-item"><span class="stat-value" id="focusMinutes">0</span><span class="stat-label">focus minutes</span></p>
-        <p class="stat-item"><span class="stat-value" id="sessionState">Ready</span><span class="stat-label">current state</span></p>
-      </div>
+        <div class="goal-block">
+          <p class="goal-line">
+            <span class="goal-value" id="todayFocus">0m</span>
+            <span class="goal-target" id="goalTarget">of a 2h goal</span>
+          </p>
+          <div class="meter" role="img" id="goalMeter" aria-label="Daily focus goal progress">
+            <span class="meter-fill" id="goalFill"></span>
+          </div>
+          <p class="goal-caption" id="goalCaption">Start a session to get going.</p>
+        </div>
 
-      <div class="session-track">
-        <span class="track-label">Until long break</span>
-        <div class="track-dots" id="trackDots" aria-hidden="true"></div>
-        <span class="track-count" id="trackCount">0 / 4</span>
-      </div>
+        <div class="stat-grid">
+          <p class="stat-item"><span class="stat-value" id="completedSessions">0</span><span class="stat-label">sessions today</span></p>
+          <p class="stat-item"><span class="stat-value" id="streakValue">0</span><span class="stat-label">day streak</span></p>
+          <p class="stat-item"><span class="stat-value" id="todayDistractions">0</span><span class="stat-label">distractions</span></p>
+        </div>
+
+        <div class="session-track">
+          <span class="track-label">Until long break</span>
+          <div class="track-dots" id="trackDots" aria-hidden="true"></div>
+          <span class="track-count" id="trackCount">0 / 4</span>
+        </div>
+      </section>
+
+      <!-- Tasks -->
+      <section class="card" aria-labelledby="tasksTitle">
+        <div class="panel-heading">
+          <span id="tasksTitle">Focus queue</span>
+          <span class="panel-rule" aria-hidden="true"></span>
+          <button class="ghost-button" id="clearDoneTasks" type="button">Clear done</button>
+        </div>
+
+        <form class="task-form" id="taskForm" autocomplete="off">
+          <input class="task-input" id="taskTitle" type="text" placeholder="What are you working on?" maxlength="120" aria-label="Task name" required>
+          <div class="task-form-row">
+            <input class="task-project" id="taskProject" type="text" placeholder="Project (optional)" maxlength="40" list="projectList" aria-label="Project">
+            <datalist id="projectList"></datalist>
+            <input class="task-estimate" id="taskEstimate" type="number" min="1" max="24" step="1" value="2" inputmode="numeric" aria-label="Estimated sessions">
+            <button class="button button-secondary task-add" type="submit">Add</button>
+          </div>
+        </form>
+
+        <ul class="task-list" id="taskList"></ul>
+        <p class="task-empty" id="taskEmpty">Add what you intend to work on. Each finished session is credited to the task you pick.</p>
+      </section>
     </aside>
 
+    <!-- Settings -->
     <section class="settings-panel" aria-labelledby="settingsTitle">
       <div class="settings-heading">
         <div>
@@ -136,16 +197,23 @@
         <p class="saved-label" id="savedLabel">Saved automatically</p>
       </div>
 
+      <div class="preset-row" role="group" aria-label="Rhythm presets">
+        <span class="preset-label">Presets</span>
+        <button class="preset" type="button" data-preset="classic">Classic 25 / 5</button>
+        <button class="preset" type="button" data-preset="deep">Deep 50 / 10</button>
+        <button class="preset" type="button" data-preset="ultradian">Ultradian 90 / 20</button>
+      </div>
+
       <div class="settings-grid">
         <div class="setting-control">
           <label class="setting-name" for="workDuration">Focus duration</label>
           <div class="setting-input">
-            <input id="workDuration" type="number" min="1" max="120" step="1" value="25" inputmode="numeric" autocomplete="off">
+            <input id="workDuration" type="number" min="1" max="180" step="1" value="25" inputmode="numeric" autocomplete="off">
             <span>min</span>
           </div>
           <div class="range-wrap">
-            <input id="workRange" type="range" min="1" max="120" step="1" value="25" aria-label="Focus duration in minutes">
-            <div class="range-limits"><span>1</span><span>120</span></div>
+            <input id="workRange" type="range" min="1" max="180" step="1" value="25" aria-label="Focus duration in minutes">
+            <div class="range-limits"><span>1</span><span>180</span></div>
           </div>
         </div>
 
@@ -186,7 +254,20 @@
         </div>
 
         <div class="setting-control">
+          <label class="setting-name" for="goalInput">Daily focus goal</label>
+          <div class="setting-input">
+            <input id="goalInput" type="number" min="15" max="720" step="15" value="120" inputmode="numeric" autocomplete="off">
+            <span>min</span>
+          </div>
+          <div class="range-wrap">
+            <input id="goalRange" type="range" min="15" max="720" step="15" value="120" aria-label="Daily focus goal in minutes">
+            <div class="range-limits"><span>15</span><span>720</span></div>
+          </div>
+        </div>
+
+        <div class="setting-control switch-stack">
           <p class="setting-name">Session flow</p>
+
           <button class="toggle-row" id="autoToggle" type="button" role="switch" aria-checked="true">
             <span class="toggle" aria-hidden="true"><span></span></span>
             <span class="toggle-text">
@@ -194,9 +275,55 @@
               <small>Roll straight into the next session</small>
             </span>
           </button>
+
+          <button class="toggle-row" id="strictToggle" type="button" role="switch" aria-checked="false">
+            <span class="toggle" aria-hidden="true"><span></span></span>
+            <span class="toggle-text">
+              <strong>Strict focus <span class="toggle-state" id="strictLabel">Off</span></strong>
+              <small>Asks before you abandon a running focus session</small>
+            </span>
+          </button>
         </div>
       </div>
 
+      <!-- Ambient sound -->
+      <div class="alerts-block" aria-labelledby="ambientTitle">
+        <div class="settings-heading">
+          <div>
+            <p class="eyebrow">While you work</p>
+            <h2 id="ambientTitle">Ambient sound</h2>
+          </div>
+          <p class="block-note">Plays during focus only, and stops on every break.</p>
+        </div>
+
+        <div class="settings-grid">
+          <div class="setting-control">
+            <label class="setting-name" for="ambientSound">Soundscape</label>
+            <div class="setting-input select-input">
+              <select id="ambientSound">
+                <option value="none">Silence</option>
+                <option value="brown">Brown noise</option>
+                <option value="pink">Pink noise</option>
+                <option value="rain">Rainfall</option>
+                <option value="waves">Slow waves</option>
+                <option value="cafe">Distant room</option>
+              </select>
+            </div>
+            <div class="range-wrap">
+              <input id="ambientVolume" type="range" min="0" max="100" step="5" value="35" aria-label="Ambient volume">
+              <div class="range-limits"><span>volume</span><span id="ambientVolumeValue">35%</span></div>
+            </div>
+          </div>
+
+          <div class="setting-control">
+            <p class="setting-name">Preview</p>
+            <button class="button button-secondary" id="ambientPreview" type="button">Play preview</button>
+            <p class="permission-status">Synthesised in the browser &mdash; nothing to download, and it keeps working offline.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Alerts -->
       <div class="alerts-block" aria-labelledby="alertsTitle">
         <div class="settings-heading">
           <div>
@@ -269,12 +396,103 @@
     </section>
   </main>
 
+  <!-- =====================================================
+       Insights view
+       ===================================================== -->
+  <main class="insights-shell" id="viewInsights" hidden>
+    <section class="insights-head">
+      <div>
+        <p class="eyebrow">How your attention is evolving</p>
+        <h1 class="insights-title">Insights</h1>
+      </div>
+
+      <!-- One filter row, above everything it scopes. -->
+      <div class="filter-row" role="group" aria-label="Date range">
+        <span class="filter-label">Range</span>
+        <button class="range-chip" type="button" data-range="30">30 days</button>
+        <button class="range-chip is-active" type="button" data-range="90" aria-pressed="true">90 days</button>
+        <button class="range-chip" type="button" data-range="365">12 months</button>
+        <button class="range-chip" type="button" data-range="all">All time</button>
+      </div>
+    </section>
+
+    <section class="summary-band" aria-label="Summary">
+      <div class="hero-figure">
+        <p class="hero-label">Deep work in this range</p>
+        <p class="hero-value" id="heroValue">0h</p>
+        <p class="hero-delta" id="heroDelta"></p>
+      </div>
+
+      <div class="kpi-row" id="kpiRow">
+        <div class="stat-tile">
+          <p class="tile-label">Sessions</p>
+          <p class="tile-value" id="kpiSessions">0</p>
+          <p class="tile-delta" id="kpiSessionsDelta"></p>
+        </div>
+        <div class="stat-tile">
+          <p class="tile-label">Average session</p>
+          <p class="tile-value" id="kpiAverage">0m</p>
+          <p class="tile-delta" id="kpiAverageDelta"></p>
+        </div>
+        <div class="stat-tile">
+          <p class="tile-label">Daily average</p>
+          <p class="tile-value" id="kpiDaily">0m</p>
+          <p class="tile-delta"><span class="tile-spark" id="kpiDailySpark"></span></p>
+        </div>
+        <div class="stat-tile">
+          <p class="tile-label">Current streak</p>
+          <p class="tile-value" id="kpiStreak">0</p>
+          <p class="tile-delta" id="kpiStreakDetail"></p>
+        </div>
+        <div class="stat-tile">
+          <p class="tile-label">Finished as planned</p>
+          <p class="tile-value" id="kpiCompletion">&ndash;</p>
+          <p class="tile-delta" id="kpiCompletionDetail"></p>
+        </div>
+        <div class="stat-tile">
+          <p class="tile-label">Interruptions / hour</p>
+          <p class="tile-value" id="kpiDistraction">&ndash;</p>
+          <p class="tile-delta" id="kpiDistractionDetail"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="chart-grid" aria-label="Charts">
+      <div class="chart-host chart-wide" id="chartTrend"></div>
+      <div class="chart-host chart-wide" id="chartCalendar"></div>
+      <div class="chart-host" id="chartHours"></div>
+      <div class="chart-host" id="chartWeekdays"></div>
+      <div class="chart-host" id="chartProjects"></div>
+      <div class="chart-host" id="chartFocusQuality"></div>
+    </section>
+
+    <section class="data-panel" aria-labelledby="dataTitle">
+      <div class="settings-heading">
+        <div>
+          <p class="eyebrow">Your record</p>
+          <h2 id="dataTitle">Data</h2>
+        </div>
+        <p class="block-note" id="dataSummary">Everything stays on this device.</p>
+      </div>
+
+      <div class="data-actions">
+        <button class="button button-secondary" id="exportJson" type="button">Export JSON</button>
+        <button class="button button-secondary" id="exportCsv" type="button">Export CSV</button>
+        <button class="button button-secondary" id="importButton" type="button">Import backup</button>
+        <input id="importInput" type="file" accept="application/json,.json" hidden>
+        <button class="button button-quiet" id="wipeData" type="button">Erase everything</button>
+      </div>
+    </section>
+  </main>
+
   <footer class="footer">
     <span>Focusline / 2026</span>
     <span class="footer-note">Your attention is the asset.</span>
   </footer>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="charts.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
