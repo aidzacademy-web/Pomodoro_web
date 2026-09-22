@@ -21,6 +21,20 @@ const ALARM_INTERVAL_MS = 4000;
 const ALARM_MAX_REPEATS = 15;
 const ALARM_PRESCHEDULE_S = 30;
 
+/* One drift is one distraction: the guard cannot log again until this
+   has passed, however long you stay away. */
+const AUTO_FLAG_COOLDOWN_MS = 45 * 1000;
+
+/* How long the camera stays up after you switch the guard on, so the
+   preview is live long enough to see yourself and calibrate. */
+const GUARD_PREVIEW_MS = 45 * 1000;
+
+const GUARD_PATIENCE = {
+  relaxed: 'Counts a distraction after about 25 seconds away.',
+  balanced: 'Counts a distraction after about 12 seconds away.',
+  strict: 'Counts a distraction after about 6 seconds away.'
+};
+
 /* A session shorter than this is treated as a false start and not recorded. */
 const MIN_RECORDED_MS = 30 * 1000;
 const HISTORY_LIMIT = 5000;
@@ -40,7 +54,12 @@ const DEFAULT_SETTINGS = {
   alarmSound: 'chime',
   volume: 0.7,
   ambientSound: 'none',
-  ambientVolume: 0.35
+  ambientVolume: 0.35,
+  guardOn: false,
+  guardNotify: true,
+  guardSensitivity: 'balanced',
+  guardYaw: 0,
+  guardPitch: 0
 };
 
 const MODES = {
@@ -123,6 +142,10 @@ const ELEMENT_IDS = [
   'longBreakDuration', 'longBreakRange', 'roundsInput', 'roundsRange', 'goalInput', 'goalRange',
   'autoToggle', 'autoLabel', 'strictToggle', 'strictLabel',
   'ambientSound', 'ambientVolume', 'ambientVolumeValue', 'ambientPreview',
+  'guardToggle', 'guardLabel', 'guardNotifyToggle', 'guardNotifyLabel', 'guardStatus',
+  'guardSensitivity', 'guardPatienceNote', 'guardPreview', 'guardVideo', 'guardPreviewIdle',
+  'guardLive', 'guardMeter', 'guardMeterFill', 'guardCalibrate',
+  'guardChip', 'guardDot', 'guardChipText',
   'soundToggle', 'soundLabel', 'repeatToggle', 'repeatLabel',
   'flashToggle', 'flashLabel', 'notifyToggle', 'notifyLabel', 'permissionStatus',
   'alarmSound', 'volumeRange', 'volumeValue', 'testAlert',
@@ -150,6 +173,7 @@ const state = {
   remainingMs: DEFAULT_SETTINGS.workMinutes * 60 * 1000,
   startedAt: null,
   distractions: 0,
+  autoFlagged: 0,
   activeTaskId: null,
   tickId: null,
   wakeLock: null
@@ -159,6 +183,10 @@ let history = [];
 let tasks = [];
 let projectSlots = {};
 let dayIndexCache = null;
+
+const Vision = window.FocuslineVision || null;
+const guardView = { status: 'off', reason: 'focused', pressure: 0, previewUntil: 0, holdTimer: null };
+let lastAutoFlagAt = 0;
 
 const alertState = {
   active: false,
@@ -201,10 +229,12 @@ function init() {
   syncToggles();
   applyTheme(readStore(THEME_KEY) || 'auto');
   renderPermissionStatus();
+  setupGuard();
   buildCharts();
   attachEvents();
   renderTasks();
   render();
+  renderGuard();
   applyRoute(location.hash);
 
   if (sessionExpiredWhileAway) {
@@ -338,11 +368,22 @@ function applySavedSettings(saved) {
   settings.flashTab = saved.flashTab !== false;
   settings.alarmSound = ALARM_SOUNDS[saved.alarmSound] ? saved.alarmSound : DEFAULT_SETTINGS.alarmSound;
   settings.ambientSound = AMBIENCES[saved.ambientSound] ? saved.ambientSound : 'none';
+  settings.guardOn = saved.guardOn === true;
+  settings.guardNotify = saved.guardNotify !== false;
+  settings.guardSensitivity = GUARD_PATIENCE[saved.guardSensitivity] ? saved.guardSensitivity : 'balanced';
+  settings.guardYaw = boundedNumber(saved.guardYaw, -0.4, 0.4, 0);
+  settings.guardPitch = boundedNumber(saved.guardPitch, -0.4, 0.4, 0);
   settings.volume = normaliseVolume(saved.volume, DEFAULT_SETTINGS.volume);
   settings.ambientVolume = normaliseVolume(saved.ambientVolume, DEFAULT_SETTINGS.ambientVolume);
   settings.notificationsOn = saved.notificationsOn === true
     && 'Notification' in window
     && Notification.permission === 'granted';
+}
+
+function boundedNumber(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function normaliseVolume(value, fallback) {
@@ -370,7 +411,8 @@ function sanitiseHistory(raw) {
       taskId: typeof entry.taskId === 'string' ? entry.taskId : null,
       taskTitle: typeof entry.taskTitle === 'string' ? entry.taskTitle.slice(0, 120) : '',
       project: typeof entry.project === 'string' ? entry.project.slice(0, 40) : '',
-      distractions: Math.max(0, toInt(entry.distractions, 0))
+      distractions: Math.max(0, toInt(entry.distractions, 0)),
+      autoFlagged: Math.max(0, toInt(entry.autoFlagged, 0))
     });
   });
   cleaned.sort(function (a, b) { return a.startedAt - b.startedAt; });
@@ -511,7 +553,8 @@ function recordSession(actualMs, completed) {
     taskId: task ? task.id : null,
     taskTitle: task ? task.title : '',
     project: task ? task.project : '',
-    distractions: state.distractions
+    distractions: state.distractions,
+    autoFlagged: state.autoFlagged
   });
 
   if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
@@ -537,12 +580,13 @@ function summariseDays(sessions) {
     const key = dayKey(new Date(entry.startedAt));
     let day = index.get(key);
     if (!day) {
-      day = { minutes: 0, sessions: 0, completed: 0, skipped: 0, distractions: 0 };
+      day = { minutes: 0, sessions: 0, completed: 0, skipped: 0, distractions: 0, autoFlagged: 0 };
       index.set(key, day);
     }
     day.minutes += entry.actualMs / 60000;
     day.sessions += entry.sessionCount;
     day.distractions += entry.distractions;
+    day.autoFlagged += entry.autoFlagged || 0;
     if (entry.completed) day.completed += entry.sessionCount;
     else day.skipped += entry.sessionCount;
   });
@@ -551,7 +595,7 @@ function summariseDays(sessions) {
 
 function todaySummary() {
   const day = allDays().get(todayKey());
-  return day || { minutes: 0, sessions: 0, completed: 0, skipped: 0, distractions: 0 };
+  return day || { minutes: 0, sessions: 0, completed: 0, skipped: 0, distractions: 0, autoFlagged: 0 };
 }
 
 /* Consecutive days, ending today or yesterday, with a completed focus session. */
@@ -587,7 +631,10 @@ function start() {
 
   if (!state.startedAt) {
     state.startedAt = Date.now();
-    if (state.mode === 'work') state.distractions = 0;
+    if (state.mode === 'work') {
+      state.distractions = 0;
+      state.autoFlagged = 0;
+    }
   }
 
   state.isRunning = true;
@@ -597,6 +644,7 @@ function start() {
   unlockAudio();
   requestWakeLock();
   syncAmbient();
+  syncGuard();
   persist();
   render();
 }
@@ -617,6 +665,7 @@ function stopTicking() {
   cancelScheduledAlarm();
   releaseWakeLock();
   syncAmbient();
+  syncGuard();
 }
 
 function tick() {
@@ -635,6 +684,7 @@ function reset() {
   state.round = 0;
   state.startedAt = null;
   state.distractions = 0;
+  state.autoFlagged = 0;
   state.remainingMs = durationFor('work');
   persist();
   render();
@@ -667,6 +717,7 @@ function completeSession(wasSkipped) {
   state.endTime = null;
   releaseWakeLock();
   syncAmbient();
+  syncGuard();
 
   if (wasWork && elapsedMs >= MIN_RECORDED_MS) {
     recordSession(elapsedMs, !wasSkipped);
@@ -684,6 +735,7 @@ function completeSession(wasSkipped) {
 
   state.startedAt = null;
   state.distractions = 0;
+  state.autoFlagged = 0;
   state.remainingMs = durationFor(state.mode);
   persist();
   scheduleInsights();
@@ -1188,6 +1240,242 @@ function previewAmbient() {
 }
 
 /* =========================================================
+   Attention guard - camera-based drift detection
+
+   The model itself lives in vision.js. This half decides when it is
+   allowed to look (focus sessions only), what a drift costs, and how
+   you are told about it.
+   ========================================================= */
+function guardAvailable() {
+  return Boolean(Vision && Vision.isSupported());
+}
+
+function setupGuard() {
+  if (!guardAvailable()) {
+    settings.guardOn = false;
+    elements.guardToggle.disabled = true;
+    elements.guardCalibrate.disabled = true;
+    return;
+  }
+
+  Vision.on('status', function (payload) {
+    guardView.status = payload.status;
+    guardView.reason = payload.reason;
+    guardView.kind = payload.kind || null;
+    guardView.detail = payload.detail || '';
+    renderGuard(payload.detail);
+  });
+
+  Vision.on('tick', function (payload) {
+    guardView.reason = payload.reason;
+    guardView.pressure = payload.pressure;
+    guardView.flagged = payload.flagged;
+    renderGuardMeter();
+  });
+
+  Vision.on('lost', onGuardLost);
+
+  Vision.on('regained', function () {
+    guardView.flagged = false;
+    renderGuardMeter();
+  });
+
+  Vision.on('calibrating', function (payload) {
+    if (payload.active) {
+      elements.guardCalibrate.textContent = 'Hold still, look at the screen\u2026';
+      return;
+    }
+    elements.guardCalibrate.textContent = 'Set my neutral position';
+    if (!payload.ok) {
+      showToast('Could not see your face - try again in better light');
+      return;
+    }
+    settings.guardYaw = payload.centre.yaw;
+    settings.guardPitch = payload.centre.pitch;
+    schedulePersist();
+    showToast('Neutral position saved');
+  });
+}
+
+/* The guard only counts a drift while a focus session is actually
+   running: no marks during breaks, and none while the timer is paused. */
+function guardShouldWatch() {
+  return settings.guardOn && state.isRunning && state.mode === 'work';
+}
+
+function guardHolding() {
+  return guardView.previewUntil > Date.now();
+}
+
+function syncGuard() {
+  if (!guardAvailable()) return;
+  const wanted = settings.guardOn && (guardShouldWatch() || guardHolding());
+  const live = guardView.status === 'watching' || guardView.status === 'loading';
+
+  /* A page served from file:// can never open a camera, so retrying each
+     session would only churn. Every other failure is worth another go. */
+  if (guardView.status === 'error' && guardView.kind === 'blocked') {
+    renderGuard(guardView.detail);
+    return;
+  }
+
+  if (wanted && !live) {
+    Vision.start({
+      video: elements.guardVideo,
+      sensitivity: settings.guardSensitivity,
+      centre: { yaw: settings.guardYaw, pitch: settings.guardPitch }
+    }).then(function (ok) {
+      /* Only an explicit refusal switches the feature off. A missing
+         camera or a failed download keeps it armed and keeps the reason
+         on screen, instead of flipping the toggle back with no
+         explanation. */
+      if (!ok && settings.guardOn && guardView.kind === 'denied') {
+        settings.guardOn = false;
+        syncToggles();
+        schedulePersist();
+      }
+      renderGuard(guardView.detail);
+    });
+  } else if (!wanted && live) {
+    Vision.stop();
+  }
+  renderGuard();
+}
+
+/* Keeps the camera up briefly so the preview is useful right after you
+   switch the guard on or ask to calibrate. */
+function holdGuardPreview() {
+  guardView.previewUntil = Date.now() + GUARD_PREVIEW_MS;
+  window.clearTimeout(guardView.holdTimer);
+  guardView.holdTimer = window.setTimeout(syncGuard, GUARD_PREVIEW_MS + 200);
+  syncGuard();
+}
+
+function onGuardLost(payload) {
+  if (!guardShouldWatch()) return;
+
+  const now = Date.now();
+  if (now - lastAutoFlagAt < AUTO_FLAG_COOLDOWN_MS) return;
+  lastAutoFlagAt = now;
+
+  state.distractions += 1;
+  state.autoFlagged += 1;
+  guardView.flagged = true;
+
+  const message = payload.message || 'Your attention drifted';
+  if (settings.guardNotify) {
+    playNudge();
+    sendNotification('Focus drifted', message + '. Marked as a distraction.');
+  }
+  showToast(message + ' \u2014 marked as a distraction');
+
+  persist();
+  render();
+  renderGuardChip();
+}
+
+/* Deliberately not the end-of-session alarm: this is a tap on the
+   shoulder, not a bell, and it sits well under the alarm's volume. */
+function playNudge() {
+  const context = getAudioContext();
+  if (!context || settings.volume <= 0) return;
+
+  const base = context.currentTime + 0.02;
+  const master = context.createGain();
+  master.gain.value = Math.min(1, Math.max(0, settings.volume)) * 0.45;
+  master.connect(context.destination);
+
+  [{ f: 587.33, t: 0 }, { f: 440, t: 0.14 }].forEach(function (note) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(note.f, base + note.t);
+    gain.gain.setValueAtTime(0.0001, base + note.t);
+    gain.gain.exponentialRampToValueAtTime(0.14, base + note.t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, base + note.t + 0.3);
+    oscillator.connect(gain).connect(master);
+    oscillator.start(base + note.t);
+    oscillator.stop(base + note.t + 0.36);
+  });
+}
+
+function renderGuard(detail) {
+  const status = guardView.status;
+  const live = status === 'watching';
+  const showing = live || status === 'loading';
+
+  elements.guardPreview.classList.toggle('is-live', live);
+  elements.guardLive.hidden = !live;
+  elements.guardPreviewIdle.hidden = showing;
+  elements.guardCalibrate.disabled = !live;
+
+  renderGuardChip();
+
+  const node = elements.guardStatus;
+  node.classList.remove('warn', 'ok');
+
+  if (!guardAvailable()) {
+    node.textContent = 'This browser cannot run the attention guard.';
+    node.classList.add('warn');
+    return;
+  }
+  if (detail && status === 'error') {
+    node.textContent = detail;
+    node.classList.add('warn');
+    return;
+  }
+  if (status === 'loading') {
+    node.textContent = detail || 'Starting\u2026';
+    return;
+  }
+  if (live) {
+    node.textContent = guardShouldWatch()
+      ? 'Watching. ' + (Vision.REASONS[guardView.reason] || '')
+      : 'Camera on for the preview. It only counts drift during a focus session.';
+    node.classList.add('ok');
+    return;
+  }
+  if (settings.guardOn) {
+    const blocked = Vision.blockedReason();
+    if (blocked) {
+      node.textContent = blocked;
+      node.classList.add('warn');
+      return;
+    }
+    node.textContent = 'Armed. The camera opens when your next focus session starts.';
+    node.classList.add('ok');
+    return;
+  }
+  node.textContent = 'Off. Switching it on asks for camera access.';
+}
+
+/* The chip lives on the timer panel and has to track the flag live, so it
+   is driven from the per-frame tick rather than only from status changes. */
+function renderGuardChip() {
+  const live = guardView.status === 'watching';
+  elements.guardChip.hidden = !(live && guardShouldWatch());
+  elements.guardChip.classList.toggle('is-flagged', Boolean(guardView.flagged));
+  setText('guardChip', elements.guardChipText,
+    guardView.flagged ? 'Attention drifted' : 'Guard watching');
+}
+
+function renderGuardMeter() {
+  renderGuardChip();
+  const pressure = Math.max(0, Math.min(1, guardView.pressure || 0));
+  elements.guardMeterFill.style.width = (pressure * 100).toFixed(0) + '%';
+  elements.guardMeter.classList.toggle('is-hot', pressure > 0.6);
+  elements.guardMeter.setAttribute('aria-label',
+    guardView.reason === 'focused'
+      ? 'Attention meter: on the work'
+      : 'Attention meter: ' + ((Vision && Vision.REASONS[guardView.reason]) || 'drifting'));
+
+  if (elements.guardDot) {
+    elements.guardDot.className = 'guard-dot'
+      + (guardView.flagged ? ' is-flagged' : (pressure > 0.4 ? ' is-warm' : ''));
+  }
+}
+
+/* =========================================================
    Desktop notifications
    ========================================================= */
 function sendNotification(title, body) {
@@ -1448,6 +1736,8 @@ function syncControls() {
   elements.ambientSound.value = settings.ambientSound;
   elements.ambientVolume.value = Math.round(settings.ambientVolume * 100);
   elements.ambientVolumeValue.textContent = Math.round(settings.ambientVolume * 100) + '%';
+  elements.guardSensitivity.value = settings.guardSensitivity;
+  elements.guardPatienceNote.textContent = GUARD_PATIENCE[settings.guardSensitivity];
 }
 
 function syncToggles() {
@@ -1457,6 +1747,8 @@ function syncToggles() {
   setToggle(elements.repeatToggle, elements.repeatLabel, settings.repeatAlarm);
   setToggle(elements.flashToggle, elements.flashLabel, settings.flashTab);
   setToggle(elements.notifyToggle, elements.notifyLabel, settings.notificationsOn);
+  setToggle(elements.guardToggle, elements.guardLabel, settings.guardOn);
+  setToggle(elements.guardNotifyToggle, elements.guardNotifyLabel, settings.guardNotify);
 }
 
 function setToggle(button, label, isOn) {
@@ -1736,9 +2028,11 @@ function renderSummary(sessions, start, bounds) {
   const focusHours = current.minutes / 60;
   const rate = focusHours >= 0.5 ? current.distractions / focusHours : null;
   elements.kpiDistraction.textContent = rate === null ? '–' : (Math.round(rate * 10) / 10).toFixed(1);
+  const flagged = sessions.reduce(function (sum, entry) { return sum + (entry.autoFlagged || 0); }, 0);
   elements.kpiDistractionDetail.textContent = rate === null
     ? 'Log a few to see the rate'
-    : current.distractions + ' logged in ' + formatMinutes(current.minutes);
+    : current.distractions + ' logged in ' + formatMinutes(current.minutes)
+      + (flagged ? ' · ' + flagged + ' caught by the camera' : '');
 }
 
 /* Direction, and whether up is good, decide the colour. */
@@ -2041,7 +2335,7 @@ function exportJson() {
 }
 
 function exportCsv() {
-  const header = ['started_at', 'ended_at', 'minutes', 'planned_minutes', 'completed', 'task', 'project', 'distractions'];
+  const header = ['started_at', 'ended_at', 'minutes', 'planned_minutes', 'completed', 'task', 'project', 'distractions', 'camera_flagged'];
   const rows = history.filter(function (entry) { return entry.mode === 'work'; }).map(function (entry) {
     return [
       new Date(entry.startedAt).toISOString(),
@@ -2051,7 +2345,8 @@ function exportCsv() {
       entry.completed ? 'yes' : 'skipped',
       csvCell(entry.taskTitle),
       csvCell(entry.project),
-      String(entry.distractions)
+      String(entry.distractions),
+      String(entry.autoFlagged || 0)
     ].join(',');
   });
   download('focusline-sessions-' + todayKey() + '.csv', [header.join(',')].concat(rows).join('\r\n'), 'text/csv');
@@ -2133,6 +2428,7 @@ function wipeEverything() {
   state.cycle = 1;
   state.distractions = 0;
   Object.keys(DEFAULT_SETTINGS).forEach(function (key) { settings[key] = DEFAULT_SETTINGS[key]; });
+  if (Vision) Vision.stop();
   if (!state.isRunning) state.remainingMs = durationFor(state.mode);
 
   syncControls();
@@ -2253,6 +2549,41 @@ function attachEvents() {
 
   elements.notifyToggle.addEventListener('click', toggleNotifications);
 
+  elements.guardToggle.addEventListener('click', function () {
+    settings.guardOn = !settings.guardOn;
+    syncToggles();
+    schedulePersist();
+    if (settings.guardOn) {
+      holdGuardPreview();
+      showToast('Focus guard on - the camera opens during focus sessions');
+    } else {
+      guardView.previewUntil = 0;
+      window.clearTimeout(guardView.holdTimer);
+      syncGuard();
+      showToast('Focus guard off - the camera is released');
+    }
+  });
+
+  elements.guardNotifyToggle.addEventListener('click', function () {
+    settings.guardNotify = !settings.guardNotify;
+    syncToggles();
+    schedulePersist();
+  });
+
+  elements.guardSensitivity.addEventListener('change', function () {
+    const value = elements.guardSensitivity.value;
+    settings.guardSensitivity = GUARD_PATIENCE[value] ? value : 'balanced';
+    elements.guardPatienceNote.textContent = GUARD_PATIENCE[settings.guardSensitivity];
+    if (Vision) Vision.setSensitivity(settings.guardSensitivity);
+    schedulePersist();
+  });
+
+  elements.guardCalibrate.addEventListener('click', function () {
+    if (!Vision) return;
+    holdGuardPreview();
+    if (!Vision.calibrate()) showToast('Wait for the camera to start, then try again');
+  });
+
   elements.alarmSound.addEventListener('change', function () {
     settings.alarmSound = ALARM_SOUNDS[elements.alarmSound.value] ? elements.alarmSound.value : 'chime';
     schedulePersist();
@@ -2339,11 +2670,15 @@ function attachEvents() {
       tick();
     }
     render();
+    syncGuard();
     scheduleInsights();
   });
 
   window.addEventListener('beforeunload', persist);
-  window.addEventListener('pagehide', persist);
+  window.addEventListener('pagehide', function () {
+    persist();
+    if (Vision) Vision.stop();
+  });
 }
 
 function onKeydown(event) {

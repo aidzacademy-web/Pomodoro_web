@@ -119,6 +119,10 @@
           <span aria-hidden="true">&#9889;</span> Log a distraction
         </button>
         <p class="distraction-count" id="distractionCount">None this session</p>
+        <span class="guard-chip" id="guardChip" hidden>
+          <span class="guard-dot" id="guardDot" aria-hidden="true"></span>
+          <span id="guardChipText">Guard watching</span>
+        </span>
       </div>
 
       <p class="next-up" id="nextUp">Next: a break of 5 minutes</p>
@@ -323,6 +327,66 @@
         </div>
       </div>
 
+      <!-- Attention guard -->
+      <div class="alerts-block" aria-labelledby="guardTitle">
+        <div class="settings-heading">
+          <div>
+            <p class="eyebrow">Attention guard</p>
+            <h2 id="guardTitle">Camera check</h2>
+          </div>
+          <p class="block-note">A face model runs on your machine during focus sessions. No video leaves this device, and no frames are recorded or saved.</p>
+        </div>
+
+        <div class="settings-grid">
+          <div class="setting-control switch-stack">
+            <p class="setting-name">Watch for drift</p>
+
+            <button class="toggle-row" id="guardToggle" type="button" role="switch" aria-checked="false">
+              <span class="toggle" aria-hidden="true"><span></span></span>
+              <span class="toggle-text">
+                <strong>Focus guard <span class="toggle-state" id="guardLabel">Off</span></strong>
+                <small>Marks a distraction when you look away for a while</small>
+              </span>
+            </button>
+
+            <button class="toggle-row" id="guardNotifyToggle" type="button" role="switch" aria-checked="true">
+              <span class="toggle" aria-hidden="true"><span></span></span>
+              <span class="toggle-text">
+                <strong>Nudge me <span class="toggle-state" id="guardNotifyLabel">On</span></strong>
+                <small>A soft tone and a notification when it catches you drifting</small>
+              </span>
+            </button>
+
+            <p class="permission-status" id="guardStatus">Off. Switching it on asks for camera access.</p>
+          </div>
+
+          <div class="setting-control">
+            <label class="setting-name" for="guardSensitivity">Patience</label>
+            <div class="setting-input select-input">
+              <select id="guardSensitivity">
+                <option value="relaxed">Relaxed</option>
+                <option value="balanced">Balanced</option>
+                <option value="strict">Strict</option>
+              </select>
+            </div>
+            <p class="permission-status" id="guardPatienceNote">How long you can be away before it counts.</p>
+          </div>
+
+          <div class="setting-control">
+            <p class="setting-name">Preview</p>
+            <div class="guard-preview" id="guardPreview">
+              <video id="guardVideo" playsinline muted aria-label="Live camera preview"></video>
+              <span class="guard-preview-idle" id="guardPreviewIdle">Camera off</span>
+              <span class="guard-live" id="guardLive" hidden><span class="guard-live-dot" aria-hidden="true"></span>Live</span>
+            </div>
+            <div class="guard-meter" id="guardMeter" role="img" aria-label="Attention meter">
+              <span class="guard-meter-fill" id="guardMeterFill"></span>
+            </div>
+            <button class="button button-secondary" id="guardCalibrate" type="button">Set my neutral position</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Alerts -->
       <div class="alerts-block" aria-labelledby="alertsTitle">
         <div class="settings-heading">
@@ -493,6 +557,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="charts.js"></script>
+  <script src="vision.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
